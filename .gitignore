@@ -1,0 +1,13 @@
+.git-nested-backups/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+*.egg-info/
+build/
+dist/
+
+ddsp_pytorch/preprocessed/
+ddsp_pytorch/runs/
+ddsp_pytorch/export/

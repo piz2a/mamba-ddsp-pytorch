@@ -1,0 +1,7 @@
+{
+    "python.pythonPath": "/home/caillon/miniconda3/bin/python",
+    "python.formatting.provider": "yapf",
+    "cmake.sourceDirectory": "/Users/ziho/dev/ddsp_pytorch/realtime",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
