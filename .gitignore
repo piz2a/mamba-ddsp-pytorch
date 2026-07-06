@@ -11,3 +11,5 @@ dist/
 ddsp_pytorch/preprocessed/
 ddsp_pytorch/runs/
 ddsp_pytorch/export/
+
+data/MNIST
