@@ -81,7 +81,7 @@ class Head(nn.Module):
         v = self.value(x) # (B, T, hs)
         wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5  # (B, T, hs) @ (B, hs, T) -> (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float("-inf"))  # truncate self.tril for edge case T < block_size
-        wei = F.softmax(wei, dim=1)  # (B, T, T)
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
         wei = self.dropout(wei)
         out = wei @ v  # (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
@@ -194,5 +194,7 @@ for iter in range(max_iters):
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
-#open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+m.eval()
+with torch.no_grad():
+    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+    #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
