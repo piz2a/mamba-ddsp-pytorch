@@ -3,12 +3,13 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 from ddsp.model import DDSP
 from effortless_config import Config
-from os import path
-from preprocess import Dataset
+from os import makedirs, path
+import itertools
+from idmt_bass import IDMTBassRiffDataset
+from preprocess import Dataset as PreprocessedDataset
 from tqdm import tqdm
 from ddsp.core import multiscale_fft, safe_log, mean_std_loudness
 import soundfile as sf
-from einops import rearrange
 from ddsp.utils import get_scheduler
 import numpy as np
 
@@ -31,24 +32,74 @@ with open(args.CONFIG, "r") as config:
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-model = DDSP(**config["model"]).to(device)
 
-dataset = Dataset(config["preprocess"]["out_dir"])
+def make_dataset(config):
+    data_config = config.get("data", {})
+    dataset_type = data_config.get("dataset", "preprocessed")
+    if dataset_type == "idmt_bass_riff":
+        return IDMTBassRiffDataset(
+            data_location=data_config["data_location"],
+            sampling_rate=config["preprocess"]["sampling_rate"],
+            block_size=config["preprocess"]["block_size"],
+            signal_length=config["preprocess"]["signal_length"],
+            **config.get("idmt_bass", {}),
+        )
+    if dataset_type == "preprocessed":
+        return PreprocessedDataset(config["preprocess"]["out_dir"])
+
+    raise ValueError(
+        "data.dataset must be 'preprocessed' or 'idmt_bass_riff', "
+        f"got {dataset_type!r}"
+    )
+
+
+dataset = make_dataset(config)
+if len(dataset) < args.BATCH:
+    raise ValueError(
+        f"dataset has {len(dataset)} examples, but batch size is "
+        f"{args.BATCH}. Add more audio, lower --batch, or set oneshot: false "
+        "with longer source files before training."
+    )
+
+if isinstance(dataset, IDMTBassRiffDataset):
+    config["model"]["n_pluck"] = dataset.n_pluck
+    config["model"]["n_expression"] = dataset.n_expression
+    config["data"]["pluck_labels"] = list(dataset.pluck_labels)
+    config["data"]["expression_labels"] = list(dataset.expression_labels)
+
+model = DDSP(**config["model"]).to(device)
 
 dataloader = torch.utils.data.DataLoader(
     dataset,
     args.BATCH,
     True,
     drop_last=True,
+    num_workers=config["train"].get("num_workers", 0),
 )
 
-mean_loudness, std_loudness = mean_std_loudness(dataloader)
+stats_batches = config["train"].get("loudness_stats_batches")
+if stats_batches:
+    stats_loader = torch.utils.data.DataLoader(
+        dataset,
+        args.BATCH,
+        True,
+        drop_last=True,
+        num_workers=config["train"].get("num_workers", 0),
+    )
+    mean_loudness, std_loudness = mean_std_loudness(
+        itertools.islice(stats_loader, int(stats_batches))
+    )
+else:
+    mean_loudness, std_loudness = mean_std_loudness(dataloader)
+std_loudness = max(float(std_loudness), 1e-8)
 config["data"]["mean_loudness"] = mean_loudness
 config["data"]["std_loudness"] = std_loudness
 
-writer = SummaryWriter(path.join(args.ROOT, args.NAME), flush_secs=20)
+run_dir = path.join(args.ROOT, args.NAME)
+makedirs(run_dir, exist_ok=True)
+writer = SummaryWriter(run_dir, flush_secs=20)
 
-with open(path.join(args.ROOT, args.NAME, "config.yaml"), "w") as out_config:
+with open(path.join(run_dir, "config.yaml"), "w") as out_config:
     yaml.safe_dump(config, out_config)
 
 opt = torch.optim.Adam(model.parameters(), lr=args.START_LR)
@@ -69,14 +120,25 @@ step = 0
 epochs = int(np.ceil(args.STEPS / len(dataloader)))
 
 for e in tqdm(range(epochs)):
-    for s, p, l in dataloader:
+    for batch in dataloader:
+        if len(batch) == 3:
+            s, p, l = batch
+            pluck = None
+            expression = None
+        elif len(batch) == 5:
+            s, p, l, pluck, expression = batch
+            pluck = pluck.to(device)
+            expression = expression.to(device)
+        else:
+            raise ValueError(f"unexpected batch with {len(batch)} tensors")
+
         s = s.to(device)
         p = p.unsqueeze(-1).to(device)
         l = l.unsqueeze(-1).to(device)
 
         l = (l - mean_loudness) / std_loudness
 
-        y = model(p, l).squeeze(-1)
+        y = model(p, l, pluck, expression).squeeze(-1)
 
         ori_stft = multiscale_fft(
             s,
@@ -106,8 +168,11 @@ for e in tqdm(range(epochs)):
         n_element += 1
         mean_loss += (loss.item() - mean_loss) / n_element
 
+        if step >= args.STEPS:
+            break
+
     if not e % 10:
-        writer.add_scalar("lr", schedule(e), e)
+        writer.add_scalar("lr", schedule(step), step)
         writer.add_scalar("reverb_decay", model.reverb.decay.item(), e)
         writer.add_scalar("reverb_wet", model.reverb.wet.item(), e)
         # scheduler.step()
@@ -115,7 +180,7 @@ for e in tqdm(range(epochs)):
             best_loss = mean_loss
             torch.save(
                 model.state_dict(),
-                path.join(args.ROOT, args.NAME, "state.pth"),
+                path.join(run_dir, "state.pth"),
             )
 
         mean_loss = 0
@@ -124,7 +189,10 @@ for e in tqdm(range(epochs)):
         audio = torch.cat([s, y], -1).reshape(-1).detach().cpu().numpy()
 
         sf.write(
-            path.join(args.ROOT, args.NAME, f"eval_{e:06d}.wav"),
+            path.join(run_dir, f"eval_{e:06d}.wav"),
             audio,
             config["preprocess"]["sampling_rate"],
         )
+
+    if step >= args.STEPS:
+        break

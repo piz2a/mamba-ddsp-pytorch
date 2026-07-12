@@ -12,7 +12,21 @@ from scipy.io import wavfile
 
 
 def get_files(data_location, extension, **kwargs):
-    return list(pathlib.Path(data_location).rglob(f"*.{extension}"))
+    data_path = pathlib.Path(data_location).expanduser()
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"data.data_location does not exist: {data_path}"
+        )
+
+    extension = extension.lstrip(".")
+    files = sorted(data_path.rglob(f"*.{extension}"))
+    if not files:
+        raise FileNotFoundError(
+            f"found no '*.{extension}' files under data.data_location: "
+            f"{data_path}"
+        )
+
+    return files
 
 
 def preprocess(f, sampling_rate, block_size, signal_length, oneshot, **kwargs):
@@ -36,9 +50,24 @@ def preprocess(f, sampling_rate, block_size, signal_length, oneshot, **kwargs):
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, out_dir):
         super().__init__()
-        self.signals = np.load(path.join(out_dir, "signals.npy"))
-        self.pitchs = np.load(path.join(out_dir, "pitchs.npy"))
-        self.loudness = np.load(path.join(out_dir, "loudness.npy"))
+        files = {
+            "signals": path.join(out_dir, "signals.npy"),
+            "pitchs": path.join(out_dir, "pitchs.npy"),
+            "loudness": path.join(out_dir, "loudness.npy"),
+        }
+        missing = [file_path for file_path in files.values()
+                   if not path.exists(file_path)]
+        if missing:
+            raise FileNotFoundError(
+                "missing preprocessed dataset files: "
+                f"{', '.join(missing)}. Run `python preprocess.py` after "
+                "setting data.data_location in config.yaml to a directory "
+                "containing audio files."
+            )
+
+        self.signals = np.load(files["signals"])
+        self.pitchs = np.load(files["pitchs"])
+        self.loudness = np.load(files["loudness"])
 
     def __len__(self):
         return self.signals.shape[0]

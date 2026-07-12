@@ -108,22 +108,72 @@ class Reverb(nn.Module):
         return x
 
 
+class StyleEncoder(nn.Module):
+    def __init__(self, n_pluck, n_expression, embedding_size, z_size,
+                 hidden_size):
+        super().__init__()
+        self.pluck = nn.Embedding(n_pluck, embedding_size)
+        self.expression = nn.Embedding(n_expression, embedding_size)
+        self.net = nn.Sequential(
+            mlp(2 * embedding_size, hidden_size, 2),
+            nn.Linear(hidden_size, z_size),
+            nn.LayerNorm(z_size),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, pluck, expression):
+        if pluck.ndim == 3:
+            pluck = pluck.squeeze(-1)
+        if expression.ndim == 3:
+            expression = expression.squeeze(-1)
+
+        pluck = pluck.long()
+        expression = expression.long()
+        style = torch.cat([
+            self.pluck(pluck),
+            self.expression(expression),
+        ], dim=-1)
+        return self.net(style)
+
+
 class DDSP(nn.Module):
     def __init__(self, hidden_size, n_harmonic, n_bands, sampling_rate,
                  block_size, recurrent_type="gru", mamba_d_state=16,
-                 mamba_d_conv=4, mamba_expand=2):
+                 mamba_d_conv=4, mamba_expand=2, n_pluck=0,
+                 n_expression=0, style_embedding_size=16, z_size=16,
+                 style_hidden_size=None):
         super().__init__()
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
         self.register_buffer("block_size", torch.tensor(block_size))
         self.recurrent_type = recurrent_type
+        self.use_style = n_pluck > 0 and n_expression > 0 and z_size > 0
+        self.z_size = z_size if self.use_style else 0
 
-        self.in_mlps = nn.ModuleList([mlp(1, hidden_size, 3)] * 2)
+        if self.use_style:
+            self.style_encoder = StyleEncoder(
+                n_pluck,
+                n_expression,
+                style_embedding_size,
+                z_size,
+                style_hidden_size or hidden_size,
+            )
+        else:
+            self.style_encoder = None
+
+        input_sizes = [1, 1]
+        if self.use_style:
+            input_sizes.append(z_size)
+        self.in_mlps = nn.ModuleList([
+            mlp(input_size, hidden_size, 3)
+            for input_size in input_sizes
+        ])
+        n_condition_inputs = len(input_sizes)
         if recurrent_type == "gru":
-            self.gru = gru(2, hidden_size)
+            self.gru = gru(n_condition_inputs, hidden_size)
             self.recurrent = self.gru
         elif recurrent_type == "mamba":
             self.recurrent = MambaRecurrent(
-                2 * hidden_size,
+                n_condition_inputs * hidden_size,
                 hidden_size,
                 d_state=mamba_d_state,
                 d_conv=mamba_d_conv,
@@ -134,7 +184,7 @@ class DDSP(nn.Module):
                 "recurrent_type must be either 'gru' or 'mamba', "
                 f"got {recurrent_type!r}"
             )
-        self.out_mlp = mlp(hidden_size + 2, hidden_size, 3)
+        self.out_mlp = mlp(hidden_size + 2 + self.z_size, hidden_size, 3)
 
         self.proj_matrices = nn.ModuleList([
             nn.Linear(hidden_size, n_harmonic + 1),
@@ -178,13 +228,46 @@ class DDSP(nn.Module):
         else:
             self.recurrent.reset_state()
 
-    def forward(self, pitch, loudness):
-        hidden = torch.cat([
+    def _encode_style(self, pitch, pluck, expression):
+        if not self.use_style:
+            return None
+
+        shape = pitch.shape[:2]
+        if pluck is None:
+            pluck = torch.zeros(shape, dtype=torch.long, device=pitch.device)
+        if expression is None:
+            expression = torch.zeros(shape, dtype=torch.long, device=pitch.device)
+        return self.style_encoder(pluck.to(pitch.device), expression.to(pitch.device))
+
+    def _decoder_hidden(self, pitch, loudness, pluck, expression, realtime):
+        z = self._encode_style(pitch, pluck, expression)
+        inputs = [
             self.in_mlps[0](pitch),
             self.in_mlps[1](loudness),
-        ], -1)
-        hidden = torch.cat([self._run_recurrent(hidden), pitch, loudness], -1)
-        hidden = self.out_mlp(hidden)
+        ]
+        if z is not None:
+            inputs.append(self.in_mlps[2](z))
+
+        hidden = torch.cat(inputs, -1)
+        recurrent = (
+            self._run_recurrent_realtime(hidden)
+            if realtime
+            else self._run_recurrent(hidden)
+        )
+
+        outputs = [recurrent, pitch, loudness]
+        if z is not None:
+            outputs.append(z)
+        return self.out_mlp(torch.cat(outputs, -1))
+
+    def forward(self, pitch, loudness, pluck=None, expression=None):
+        hidden = self._decoder_hidden(
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            realtime=False,
+        )
 
         # harmonic part
         param = scale_function(self.proj_matrices[0](hidden))
@@ -225,15 +308,14 @@ class DDSP(nn.Module):
 
         return signal
 
-    def realtime_forward(self, pitch, loudness):
-        hidden = torch.cat([
-            self.in_mlps[0](pitch),
-            self.in_mlps[1](loudness),
-        ], -1)
-
-        recurrent_out = self._run_recurrent_realtime(hidden)
-        hidden = torch.cat([recurrent_out, pitch, loudness], -1)
-        hidden = self.out_mlp(hidden)
+    def realtime_forward(self, pitch, loudness, pluck=None, expression=None):
+        hidden = self._decoder_hidden(
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            realtime=True,
+        )
 
         # harmonic part
         param = scale_function(self.proj_matrices[0](hidden))
