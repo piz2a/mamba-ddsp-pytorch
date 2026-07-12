@@ -13,7 +13,6 @@ from ddsp.core import extract_loudness, extract_pitch
 
 PLUCKING_STYLES = ("FS", "MU", "PK", "SP", "ST")
 EXPRESSION_STYLES = ("NO", "BE", "DN", "HA", "VI")
-F0_DEPENDENT_EXPRESSION_STYLES = ("BEQ", "BES", "SLD", "SLU", "VIF", "VIS")
 
 
 @dataclass(frozen=True)
@@ -103,7 +102,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         trim_pad_seconds=0.012,
         edge_fade_seconds=0.004,
         release_fade_seconds=0.035,
-        exclude_expression_styles=F0_DEPENDENT_EXPRESSION_STYLES,
+        include_expression_styles=EXPRESSION_STYLES,
         include_string_numbers=(1, 2, 3, 4),
         cache_size=384,
         pitch_source="torchcrepe",
@@ -144,7 +143,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.trim_pad_samples = int(float(trim_pad_seconds) * sampling_rate)
         self.edge_fade_samples = int(float(edge_fade_seconds) * sampling_rate)
         self.release_fade_samples = int(float(release_fade_seconds) * sampling_rate)
-        self.exclude_expression_styles = set(exclude_expression_styles or [])
+        self.include_expression_styles = {
+            str(expression)
+            for expression in include_expression_styles
+        } if include_expression_styles else None
         self.include_string_numbers = {
             int(string_number)
             for string_number in include_string_numbers
@@ -163,7 +165,8 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             if path.parent.parent.name not in {"PS", "ES"}:
                 continue
             note = parse_idmt_bass_note(path)
-            if note.expression in self.exclude_expression_styles:
+            if (self.include_expression_styles is not None
+                    and note.expression not in self.include_expression_styles):
                 continue
             if (self.include_string_numbers is not None
                     and note.string not in self.include_string_numbers):
@@ -330,9 +333,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         })
         return segment, info
 
-    def _event(self, start, note, trim_info, crossfade):
+    def _event(self, start, note, trim_info, crossfade, transition_start=None):
+        transition_start = start if transition_start is None else transition_start
         return {
             "start_sample": int(start),
+            "transition_start_sample": int(transition_start),
+            "transition_midpoint_sample": int(start),
+            "transition_end_sample": int(transition_start + crossfade),
             "pluck_id": int(self.pluck_to_id[note.pluck]),
             "expression_id": int(self.expression_to_id[note.expression]),
             "pluck": note.pluck,
@@ -347,7 +354,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
 
     def _append_note(self, audio, events, note_audio, note, rng, trim_info):
         if audio.size == 0:
-            events.append(self._event(0, note, trim_info, 0))
+            events.append(self._event(0, note, trim_info, 0, 0))
             return note_audio.copy()
 
         crossfade = rng.randint(
@@ -364,7 +371,8 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         out[start:] = out[start:] * fade_out + note_audio[:crossfade] * fade_in
         out = np.concatenate([out, note_audio[crossfade:]], axis=0)
 
-        events.append(self._event(start, note, trim_info, crossfade))
+        label_start = start + crossfade // 2
+        events.append(self._event(label_start, note, trim_info, crossfade, start))
         return out
 
     def _intervals(self, events):

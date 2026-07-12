@@ -5,6 +5,7 @@ from ddsp.model import DDSP
 from effortless_config import Config
 from os import makedirs, path
 import itertools
+import csv
 from idmt_bass import IDMTBassRiffDataset
 from preprocess import Dataset as PreprocessedDataset
 from tqdm import tqdm
@@ -23,6 +24,7 @@ class args(Config):
     START_LR = 1e-3
     STOP_LR = 1e-4
     DECAY_OVER = 400000
+    DEVICE = None
 
 
 args.parse_args()
@@ -30,7 +32,11 @@ args.parse_args()
 with open(args.CONFIG, "r") as config:
     config = yaml.safe_load(config)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device(
+    args.DEVICE
+    if args.DEVICE is not None
+    else ("cuda:0" if torch.cuda.is_available() else "cpu")
+)
 
 
 def make_dataset(config):
@@ -98,6 +104,10 @@ config["data"]["std_loudness"] = std_loudness
 run_dir = path.join(args.ROOT, args.NAME)
 makedirs(run_dir, exist_ok=True)
 writer = SummaryWriter(run_dir, flush_secs=20)
+loss_csv_path = path.join(run_dir, "loss.csv")
+loss_csv = open(loss_csv_path, "w", newline="")
+loss_writer = csv.writer(loss_csv)
+loss_writer.writerow(["step", "loss"])
 
 with open(path.join(run_dir, "config.yaml"), "w") as out_config:
     yaml.safe_dump(config, out_config)
@@ -159,9 +169,17 @@ for e in tqdm(range(epochs)):
 
         opt.zero_grad()
         loss.backward()
+        grad_clip_norm = config["train"].get("grad_clip_norm")
+        if grad_clip_norm:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                float(grad_clip_norm),
+            )
         opt.step()
 
         writer.add_scalar("loss", loss.item(), step)
+        loss_writer.writerow([step, loss.item()])
+        loss_csv.flush()
 
         step += 1
 
@@ -171,7 +189,9 @@ for e in tqdm(range(epochs)):
         if step >= args.STEPS:
             break
 
-    if not e % 10:
+    should_finish = step >= args.STEPS
+    eval_every_epochs = int(config["train"].get("eval_every_epochs", 10))
+    if (not e % eval_every_epochs) or should_finish:
         writer.add_scalar("lr", schedule(step), step)
         writer.add_scalar("reverb_decay", model.reverb.decay.item(), e)
         writer.add_scalar("reverb_wet", model.reverb.wet.item(), e)
@@ -194,5 +214,7 @@ for e in tqdm(range(epochs)):
             config["preprocess"]["sampling_rate"],
         )
 
-    if step >= args.STEPS:
+    if should_finish:
         break
+
+loss_csv.close()

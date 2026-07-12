@@ -26,7 +26,7 @@ idmt_bass:
   trim_pad_seconds: 0.012
   edge_fade_seconds: 0.004
   release_fade_seconds: 0.035
-  exclude_expression_styles: [BEQ, BES, SLD, SLU, VIF, VIS]
+  include_expression_styles: ["NO", BE, DN, HA, VI]
   include_string_numbers: [1, 2, 3, 4]
   cache_size: 384
   pitch_source: torchcrepe
@@ -53,3 +53,5 @@ train:
   overlap: .75
   loudness_stats_batches: 2
   num_workers: 0
+  grad_clip_norm: 1.0
+  eval_every_epochs: 10

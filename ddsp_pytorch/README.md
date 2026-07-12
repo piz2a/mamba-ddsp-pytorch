@@ -50,6 +50,12 @@ python visualize_idmt_riff.py --config config_idmt_bass.yaml --out-dir debug/idm
 This writes `riff.wav`, `riff_debug.png`, `riff_debug_zoom.png`,
 `intervals.csv`, and `riff_debug.json`.
 
+After a training run, render a target/reconstruction debug bundle:
+
+```bash
+python visualize_ddsp_run.py --run runs/idmt_bass_midpoint_train --out-dir runs/idmt_bass_midpoint_train/visuals --seed 4321 --pitch-source torchcrepe
+```
+
 Once trained, export it using
 
 ```bash
