@@ -15,7 +15,8 @@ def mean_std_loudness(dataset):
     mean = 0
     std = 0
     n = 0
-    for _, _, l in dataset:
+    for batch in dataset:
+        l = batch[2]
         n += 1
         mean += (l.mean().item() - mean) / n
         std += (l.std().item() - std) / n
@@ -85,7 +86,7 @@ def extract_loudness(signal, sampling_rate, block_size, n_fft=2048):
         center=True,
     )
     S = np.log(abs(S) + 1e-7)
-    f = li.fft_frequencies(sr=sampling_rate, n_fft=n_fft)
+    f = np.maximum(li.fft_frequencies(sr=sampling_rate, n_fft=n_fft), 1e-7)
     a_weight = li.A_weighting(f)
 
     S = S + a_weight.reshape(-1, 1)
@@ -95,7 +96,7 @@ def extract_loudness(signal, sampling_rate, block_size, n_fft=2048):
     return S
 
 
-def extract_pitch(signal, sampling_rate, block_size):
+def extract_pitch(signal, sampling_rate, block_size, fmin=30.0, fmax=2000.0):
     length = signal.shape[-1] // block_size
 
     try:
@@ -158,8 +159,8 @@ def extract_pitch(signal, sampling_rate, block_size):
         signal_tensor,
         sampling_rate,
         hop_length=block_size,
-        fmin=50,
-        fmax=2000,
+        fmin=fmin,
+        fmax=fmax,
         decoder=torchcrepe.decode.viterbi,
         device=device,
     )

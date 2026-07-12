@@ -1,0 +1,506 @@
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+import math
+import random
+
+import librosa as li
+import numpy as np
+import torch
+
+from ddsp.core import extract_loudness, extract_pitch
+
+
+PLUCKING_STYLES = ("FS", "MU", "PK", "SP", "ST")
+EXPRESSION_STYLES = ("NO", "BE", "DN", "HA", "VI")
+F0_DEPENDENT_EXPRESSION_STYLES = ("BEQ", "BES", "SLD", "SLU", "VIF", "VIS")
+
+
+@dataclass(frozen=True)
+class BassNote:
+    path: Path
+    pluck: str
+    expression: str
+    string: int
+    fret: int
+    frequency: float
+
+
+def bass_note_frequency(string_number, fret_number):
+    open_string_midi = {
+        1: 28,  # E1
+        2: 33,  # A1
+        3: 38,  # D2
+        4: 43,  # G2
+        5: 23,  # B0, present in a few IDMT files despite the 4-string note.
+    }
+    midi = open_string_midi[int(string_number)] + int(fret_number)
+    return 440.0 * (2.0 ** ((midi - 69) / 12.0))
+
+
+def parse_idmt_bass_note(path):
+    path = Path(path)
+    group = path.parent.parent.name
+    category = path.parent.name
+
+    if group == "PS":
+        pluck = category
+        expression = "NO"
+    elif group == "ES":
+        pluck = "FS"
+        expression = category
+    else:
+        raise ValueError(f"expected path under PS or ES, got {path}")
+
+    tokens = path.stem.split("_")
+    try:
+        string_number = int(tokens[-2])
+        fret_number = int(tokens[-1])
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"could not parse string/fret from {path.name}") from exc
+
+    return BassNote(
+        path=path,
+        pluck=pluck,
+        expression=expression,
+        string=string_number,
+        fret=fret_number,
+        frequency=bass_note_frequency(string_number, fret_number),
+    )
+
+
+def _ordered_labels(values, preferred_order):
+    present = set(values)
+    labels = [value for value in preferred_order if value in present]
+    labels.extend(sorted(present.difference(labels)))
+    return labels
+
+
+class IDMTBassRiffDataset(torch.utils.data.Dataset):
+    """Online riff generator for the IDMT-SMT-BASS one-note dataset.
+
+    Each item trims note-level leading/trailing silence, randomly crops musical
+    note durations, and stitches notes with equal-power overlap-add crossfades.
+    """
+
+    def __init__(
+        self,
+        data_location,
+        sampling_rate,
+        block_size,
+        signal_length,
+        examples_per_epoch=2048,
+        min_note_seconds=0.20,
+        max_note_seconds=0.90,
+        min_crossfade_seconds=0.025,
+        max_crossfade_seconds=0.070,
+        trim_top_db=35.0,
+        trim_onset_top_db=25.0,
+        trim_noise_percentile=20.0,
+        trim_noise_margin_db=12.0,
+        trim_frame_size=512,
+        trim_hop_size=128,
+        trim_pad_seconds=0.012,
+        edge_fade_seconds=0.004,
+        release_fade_seconds=0.035,
+        exclude_expression_styles=F0_DEPENDENT_EXPRESSION_STYLES,
+        include_string_numbers=(1, 2, 3, 4),
+        cache_size=384,
+        pitch_source="torchcrepe",
+        pitch_fmin=40.0,
+        pitch_fmax=600.0,
+        peak_normalize=True,
+        seed=None,
+        **kwargs,
+    ):
+        super().__init__()
+        self.root = Path(data_location).expanduser()
+        if not self.root.exists():
+            raise FileNotFoundError(f"IDMT-SMT-BASS root does not exist: {self.root}")
+
+        self.sampling_rate = int(sampling_rate)
+        self.block_size = int(block_size)
+        self.signal_length = int(signal_length)
+        self.examples_per_epoch = int(examples_per_epoch)
+        self.min_note_samples = max(1, int(float(min_note_seconds) * sampling_rate))
+        self.max_note_samples = max(
+            self.min_note_samples,
+            int(float(max_note_seconds) * sampling_rate),
+        )
+        self.min_crossfade_samples = max(
+            1,
+            int(float(min_crossfade_seconds) * sampling_rate),
+        )
+        self.max_crossfade_samples = max(
+            self.min_crossfade_samples,
+            int(float(max_crossfade_seconds) * sampling_rate),
+        )
+        self.trim_top_db = float(trim_top_db)
+        self.trim_onset_top_db = float(trim_onset_top_db)
+        self.trim_noise_percentile = float(trim_noise_percentile)
+        self.trim_noise_margin_db = float(trim_noise_margin_db)
+        self.trim_frame_size = int(trim_frame_size)
+        self.trim_hop_size = int(trim_hop_size)
+        self.trim_pad_samples = int(float(trim_pad_seconds) * sampling_rate)
+        self.edge_fade_samples = int(float(edge_fade_seconds) * sampling_rate)
+        self.release_fade_samples = int(float(release_fade_seconds) * sampling_rate)
+        self.exclude_expression_styles = set(exclude_expression_styles or [])
+        self.include_string_numbers = {
+            int(string_number)
+            for string_number in include_string_numbers
+        } if include_string_numbers else None
+        self.cache_size = int(cache_size)
+        self.pitch_source = pitch_source
+        self.pitch_fmin = float(pitch_fmin)
+        self.pitch_fmax = float(pitch_fmax)
+        self.peak_normalize = bool(peak_normalize)
+        self.seed = None if seed is None else int(seed)
+        self.frames = self.signal_length // self.block_size
+        self._audio_cache = OrderedDict()
+
+        self.notes = []
+        for path in sorted(self.root.glob("*/*/*.wav")):
+            if path.parent.parent.name not in {"PS", "ES"}:
+                continue
+            note = parse_idmt_bass_note(path)
+            if note.expression in self.exclude_expression_styles:
+                continue
+            if (self.include_string_numbers is not None
+                    and note.string not in self.include_string_numbers):
+                continue
+            self.notes.append(note)
+        if not self.notes:
+            raise FileNotFoundError(f"found no IDMT-SMT-BASS wav files under {self.root}")
+
+        self.pluck_labels = _ordered_labels(
+            [note.pluck for note in self.notes],
+            PLUCKING_STYLES,
+        )
+        self.expression_labels = _ordered_labels(
+            [note.expression for note in self.notes],
+            EXPRESSION_STYLES,
+        )
+        self.pluck_to_id = {
+            label: idx for idx, label in enumerate(self.pluck_labels)
+        }
+        self.expression_to_id = {
+            label: idx for idx, label in enumerate(self.expression_labels)
+        }
+
+    @property
+    def n_pluck(self):
+        return len(self.pluck_labels)
+
+    @property
+    def n_expression(self):
+        return len(self.expression_labels)
+
+    def __len__(self):
+        return self.examples_per_epoch
+
+    def _activity_bounds(self, audio):
+        if audio.size == 0:
+            return 0, 0, {
+                "trim_peak_rms": 0.0,
+                "trim_noise_rms": 0.0,
+                "trim_threshold": 0.0,
+            }
+
+        frame_length = min(self.trim_frame_size, max(16, audio.shape[0]))
+        rms = li.feature.rms(
+            y=audio,
+            frame_length=frame_length,
+            hop_length=self.trim_hop_size,
+            center=False,
+        )[0]
+        peak = float(rms.max()) if rms.size else 0.0
+        if peak <= 1e-8:
+            return 0, audio.shape[0], {
+                "trim_peak_rms": peak,
+                "trim_noise_rms": 0.0,
+                "trim_threshold": 0.0,
+            }
+
+        edge_count = max(1, int(math.ceil(rms.size * 0.1)))
+        edge_rms = np.concatenate([rms[:edge_count], rms[-edge_count:]])
+        noise = float(np.percentile(edge_rms, self.trim_noise_percentile))
+
+        relative_threshold = peak * (10.0 ** (-self.trim_top_db / 20.0))
+        onset_threshold = peak * (10.0 ** (-self.trim_onset_top_db / 20.0))
+        noise_threshold = noise * (10.0 ** (self.trim_noise_margin_db / 20.0))
+        threshold = max(relative_threshold, noise_threshold, 1e-6)
+        onset_threshold = max(onset_threshold, noise_threshold, 1e-6)
+        active = np.flatnonzero(rms >= threshold)
+        if active.size == 0:
+            return 0, audio.shape[0], {
+                "trim_peak_rms": peak,
+                "trim_noise_rms": noise,
+                "trim_threshold": threshold,
+                "trim_onset_threshold": onset_threshold,
+            }
+
+        onset_active = np.flatnonzero(rms >= onset_threshold)
+        start_frame = int(onset_active[0] if onset_active.size else active[0])
+        start = start_frame * self.trim_hop_size - self.trim_pad_samples
+        end = int(active[-1] * self.trim_hop_size) + frame_length + self.trim_pad_samples
+        start = max(0, start)
+        end = min(audio.shape[0], end)
+        return start, end, {
+            "trim_peak_rms": peak,
+            "trim_noise_rms": noise,
+            "trim_threshold": threshold,
+            "trim_onset_threshold": onset_threshold,
+        }
+
+    def _trim_active_region(self, audio):
+        start, end, info = self._activity_bounds(audio)
+        info.update({
+            "original_samples": int(audio.shape[0]),
+            "trim_start_sample": int(start),
+            "trim_end_sample": int(end),
+            "trimmed_samples": int(max(0, end - start)),
+        })
+        return audio[start:end], info
+
+    def _apply_edge_fades(self, audio):
+        fade = min(self.edge_fade_samples, audio.shape[0] // 4)
+        if fade <= 1:
+            return audio
+
+        audio = audio.copy()
+        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        audio[:fade] *= ramp
+        audio[-fade:] *= ramp[::-1]
+        return audio
+
+    def _apply_release_fade(self, audio):
+        fade = min(self.release_fade_samples, audio.shape[0] // 3)
+        if fade <= 1:
+            return audio
+
+        audio = audio.copy()
+        audio[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        return audio
+
+    def _load_note_audio(self, note):
+        key = str(note.path)
+        cached = self._audio_cache.get(key)
+        if cached is not None:
+            self._audio_cache.move_to_end(key)
+            return cached
+
+        audio, _ = li.load(note.path, sr=self.sampling_rate, mono=True)
+        audio = np.asarray(audio, dtype=np.float32)
+        audio, trim_info = self._trim_active_region(audio)
+        audio = self._apply_edge_fades(audio)
+        if audio.size == 0:
+            audio = np.zeros(max(1, self.edge_fade_samples), dtype=np.float32)
+
+        cached = (audio, trim_info)
+        self._audio_cache[key] = cached
+        if self.cache_size > 0 and len(self._audio_cache) > self.cache_size:
+            self._audio_cache.popitem(last=False)
+        return cached
+
+    def _choose_rng(self, idx):
+        if self.seed is not None:
+            return random.Random((self.seed + int(idx) * 1000003) % (2**63 - 1))
+
+        seed = int(torch.empty((), dtype=torch.int64).random_().item())
+        return random.Random((seed + int(idx) * 1000003) % (2**63 - 1))
+
+    def _random_note_audio(self, rng, note):
+        audio, trim_info = self._load_note_audio(note)
+        target = rng.randint(self.min_note_samples, self.max_note_samples)
+        cropped = False
+        if audio.shape[0] >= target:
+            segment = audio[:target].copy()
+            cropped = audio.shape[0] > target
+            if cropped:
+                segment = self._apply_release_fade(segment)
+        else:
+            segment = audio.copy()
+
+        info = dict(trim_info)
+        info.update({
+            "source_samples": int(audio.shape[0]),
+            "segment_samples": int(segment.shape[0]),
+            "target_samples": int(target),
+            "cropped": bool(cropped),
+        })
+        return segment, info
+
+    def _event(self, start, note, trim_info, crossfade):
+        return {
+            "start_sample": int(start),
+            "pluck_id": int(self.pluck_to_id[note.pluck]),
+            "expression_id": int(self.expression_to_id[note.expression]),
+            "pluck": note.pluck,
+            "expression": note.expression,
+            "frequency": float(note.frequency),
+            "string": int(note.string),
+            "fret": int(note.fret),
+            "source_path": str(note.path),
+            "crossfade_samples": int(crossfade),
+            **trim_info,
+        }
+
+    def _append_note(self, audio, events, note_audio, note, rng, trim_info):
+        if audio.size == 0:
+            events.append(self._event(0, note, trim_info, 0))
+            return note_audio.copy()
+
+        crossfade = rng.randint(
+            self.min_crossfade_samples,
+            self.max_crossfade_samples,
+        )
+        crossfade = min(crossfade, audio.shape[0], note_audio.shape[0])
+        start = audio.shape[0] - crossfade
+        theta = np.linspace(0.0, math.pi / 2.0, crossfade, dtype=np.float32)
+        fade_out = np.cos(theta)
+        fade_in = np.sin(theta)
+
+        out = audio.copy()
+        out[start:] = out[start:] * fade_out + note_audio[:crossfade] * fade_in
+        out = np.concatenate([out, note_audio[crossfade:]], axis=0)
+
+        events.append(self._event(start, note, trim_info, crossfade))
+        return out
+
+    def _intervals(self, events):
+        intervals = []
+        for idx, event in enumerate(events):
+            start = int(event["start_sample"])
+            end = (
+                int(events[idx + 1]["start_sample"])
+                if idx + 1 < len(events)
+                else self.signal_length
+            )
+            start = min(max(start, 0), self.signal_length)
+            end = min(max(end, 0), self.signal_length)
+            if end <= start:
+                continue
+            interval = dict(event)
+            interval["end_sample"] = end
+            interval["start_seconds"] = start / self.sampling_rate
+            interval["end_seconds"] = end / self.sampling_rate
+            interval["duration_seconds"] = (end - start) / self.sampling_rate
+            intervals.append(interval)
+        return intervals
+
+    def _label_tracks(self, events):
+        starts = np.asarray([event["start_sample"] for event in events], dtype=np.int64)
+        plucks = np.asarray([event["pluck_id"] for event in events], dtype=np.int64)
+        expressions = np.asarray(
+            [event["expression_id"] for event in events],
+            dtype=np.int64,
+        )
+        frequencies = np.asarray(
+            [event["frequency"] for event in events],
+            dtype=np.float32,
+        )
+
+        frame_positions = (
+            np.arange(self.frames, dtype=np.int64) * self.block_size
+            + self.block_size // 2
+        )
+        frame_events = np.searchsorted(starts, frame_positions, side="right") - 1
+        frame_events = np.clip(frame_events, 0, len(events) - 1)
+        return (
+            plucks[frame_events],
+            expressions[frame_events],
+            frequencies[frame_events],
+        )
+
+    def _riff(self, rng):
+        audio = np.zeros(0, dtype=np.float32)
+        events = []
+        while audio.shape[0] < self.signal_length:
+            note = rng.choice(self.notes)
+            note_audio, trim_info = self._random_note_audio(rng, note)
+            if note_audio.size <= 1:
+                continue
+            audio = self._append_note(audio, events, note_audio, note, rng, trim_info)
+
+        audio = audio[:self.signal_length].astype(np.float32, copy=False)
+        if self.peak_normalize:
+            peak = float(np.max(np.abs(audio)))
+            if peak > 0.99:
+                audio = audio * (0.99 / peak)
+
+        pluck, expression, label_pitch = self._label_tracks(events)
+        return audio, pluck, expression, label_pitch, self._intervals(events)
+
+    def __getitem__(self, idx):
+        rng = self._choose_rng(idx)
+        audio, pluck, expression, label_pitch, _ = self._riff(rng)
+
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+
+        if self.pitch_source == "labels":
+            pitch = label_pitch.astype(np.float32)
+        elif self.pitch_source == "torchcrepe":
+            pitch = extract_pitch(
+                audio,
+                self.sampling_rate,
+                self.block_size,
+                fmin=self.pitch_fmin,
+                fmax=self.pitch_fmax,
+            ).astype(np.float32)
+        else:
+            raise ValueError(
+                "pitch_source must be 'torchcrepe' or 'labels', "
+                f"got {self.pitch_source!r}"
+            )
+
+        return (
+            torch.from_numpy(audio),
+            torch.from_numpy(pitch),
+            torch.from_numpy(loudness),
+            torch.from_numpy(pluck),
+            torch.from_numpy(expression),
+        )
+
+    def generate_debug_riff(self, idx=0, pitch_source=None):
+        rng = self._choose_rng(idx)
+        audio, pluck, expression, label_pitch, intervals = self._riff(rng)
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+
+        pitch_source = pitch_source or self.pitch_source
+        if pitch_source == "labels":
+            pitch = label_pitch.astype(np.float32)
+        elif pitch_source == "torchcrepe":
+            pitch = extract_pitch(
+                audio,
+                self.sampling_rate,
+                self.block_size,
+                fmin=self.pitch_fmin,
+                fmax=self.pitch_fmax,
+            ).astype(np.float32)
+        else:
+            raise ValueError(
+                "pitch_source must be 'torchcrepe' or 'labels', "
+                f"got {pitch_source!r}"
+            )
+
+        return {
+            "audio": audio,
+            "pitch": pitch,
+            "label_pitch": label_pitch,
+            "loudness": loudness,
+            "pluck": pluck,
+            "expression": expression,
+            "intervals": intervals,
+            "pluck_labels": list(self.pluck_labels),
+            "expression_labels": list(self.expression_labels),
+            "sampling_rate": self.sampling_rate,
+            "block_size": self.block_size,
+        }

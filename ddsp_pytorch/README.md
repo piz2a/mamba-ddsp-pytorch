@@ -25,8 +25,30 @@ python preprocess.py
 You can then train your model using 
 
 ```bash
-python train.py --name mytraining --steps 10000000 --batch 16 --lr .001
+python train.py --name mytraining --steps 10000000 --batch 16 --start-lr .001
 ```
+
+## IDMT-SMT-BASS riff training
+
+For the IDMT-SMT-BASS one-note corpus, use the online riff dataset config:
+
+```bash
+python train.py --config config_idmt_bass.yaml --name idmt_bass --steps 100000 --batch 4
+```
+
+`config_idmt_bass.yaml` trims leading/trailing silence per note, stitches random
+monophonic bass riffs with equal-power overlap-add crossfades, extracts `f0(t)`
+with torchcrepe, measures deterministic DDSP loudness, and trains a PS/ES style
+encoder that maps plucking and expression labels into `z(t)`.
+
+Before training, render a riff debug bundle:
+
+```bash
+python visualize_idmt_riff.py --config config_idmt_bass.yaml --out-dir debug/idmt_riff_main_es --seed 1234 --pitch-source torchcrepe
+```
+
+This writes `riff.wav`, `riff_debug.png`, `riff_debug_zoom.png`,
+`intervals.csv`, and `riff_debug.json`.
 
 Once trained, export it using
 
