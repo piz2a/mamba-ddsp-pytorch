@@ -60,9 +60,18 @@ def reconstruct(model, config, data, device):
     loudness = loudness.to(device)
     pluck = torch.from_numpy(data["pluck"]).long().unsqueeze(0).to(device)
     expression = torch.from_numpy(data["expression"]).long().unsqueeze(0).to(device)
+    onset = torch.from_numpy(data["onset"]).float().unsqueeze(0).unsqueeze(-1).to(device)
+    offset = torch.from_numpy(data["offset"]).float().unsqueeze(0).unsqueeze(-1).to(device)
 
     with torch.no_grad():
-        audio = model(pitch, loudness, pluck, expression).squeeze(0).squeeze(-1)
+        audio = model(
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            onset,
+            offset,
+        ).squeeze(0).squeeze(-1)
     return audio.detach().cpu().numpy().astype(np.float32)
 
 
@@ -120,11 +129,11 @@ def plot_reconstruction(data, reconstruction, out_png):
     )
 
     fig, axes = plt.subplots(
-        6,
+        7,
         1,
-        figsize=(16, 13),
+        figsize=(16, 14.5),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.1, 1.1, 0.8, 1.9, 1.9, 0.8]},
+        gridspec_kw={"height_ratios": [1.1, 1.1, 0.75, 0.75, 1.8, 1.8, 0.8]},
         constrained_layout=True,
     )
 
@@ -139,10 +148,17 @@ def plot_reconstruction(data, reconstruction, out_png):
     axes[1].set_ylim(-peak * 1.08, peak * 1.08)
     axes[1].set_ylabel("recon")
 
-    axes[2].plot(frame_time, data["pitch"], color="#0b7285", lw=1.0, label="torchcrepe")
+    pitch_label = f"pitch input ({data.get('pitch_source', 'unknown')})"
+    axes[2].plot(frame_time, data["pitch"], color="#0b7285", lw=1.0, label=pitch_label)
     axes[2].plot(frame_time, data["label_pitch"], color="#d9480f", lw=0.9, label="label")
     axes[2].legend(loc="upper right", frameon=False)
     axes[2].set_ylabel("Hz")
+
+    axes[3].plot(frame_time, data["onset"], color="#2f9e44", lw=1.0, label="onset")
+    axes[3].plot(frame_time, data["offset"], color="#c92a2a", lw=1.0, label="offset")
+    axes[3].set_ylim(-0.05, 1.05)
+    axes[3].legend(loc="upper right", frameon=False)
+    axes[3].set_ylabel("events")
 
     img = librosa.display.specshow(
         target_db,
@@ -151,11 +167,11 @@ def plot_reconstruction(data, reconstruction, out_png):
         x_axis="time",
         y_axis="hz",
         cmap="magma",
-        ax=axes[3],
+        ax=axes[4],
     )
-    axes[3].set_ylim(20, 1600)
-    axes[3].set_ylabel("target STFT")
-    fig.colorbar(img, ax=axes[3], format="%+2.0f dB", pad=0.01)
+    axes[4].set_ylim(20, 1600)
+    axes[4].set_ylabel("target STFT")
+    fig.colorbar(img, ax=axes[4], format="%+2.0f dB", pad=0.01)
 
     img = librosa.display.specshow(
         recon_db,
@@ -164,19 +180,19 @@ def plot_reconstruction(data, reconstruction, out_png):
         x_axis="time",
         y_axis="hz",
         cmap="magma",
-        ax=axes[4],
+        ax=axes[5],
     )
-    axes[4].set_ylim(20, 1600)
-    axes[4].set_ylabel("recon STFT")
-    fig.colorbar(img, ax=axes[4], format="%+2.0f dB", pad=0.01)
+    axes[5].set_ylim(20, 1600)
+    axes[5].set_ylabel("recon STFT")
+    fig.colorbar(img, ax=axes[5], format="%+2.0f dB", pad=0.01)
 
-    axes[5].set_ylim(0, 2)
-    axes[5].set_yticks([0.5, 1.5])
-    axes[5].set_yticklabels(["ES", "PS"])
+    axes[6].set_ylim(0, 2)
+    axes[6].set_yticks([0.5, 1.5])
+    axes[6].set_yticklabels(["ES", "PS"])
     for interval in intervals:
         start = interval["start_seconds"]
         end = interval["end_seconds"]
-        axes[5].barh(
+        axes[6].barh(
             1.5,
             end - start,
             left=start,
@@ -185,7 +201,7 @@ def plot_reconstruction(data, reconstruction, out_png):
             edgecolor="white",
             linewidth=0.5,
         )
-        axes[5].barh(
+        axes[6].barh(
             0.5,
             end - start,
             left=start,
@@ -195,12 +211,12 @@ def plot_reconstruction(data, reconstruction, out_png):
             linewidth=0.5,
         )
         if end - start > 0.28:
-            axes[5].text((start + end) * 0.5, 1.5, interval["pluck"],
+            axes[6].text((start + end) * 0.5, 1.5, interval["pluck"],
                          ha="center", va="center", fontsize=8)
-            axes[5].text((start + end) * 0.5, 0.5, interval["expression"],
+            axes[6].text((start + end) * 0.5, 0.5, interval["expression"],
                          ha="center", va="center", fontsize=8)
-    axes[5].set_xlim(0, duration)
-    axes[5].set_xlabel("time (s)")
+    axes[6].set_xlim(0, duration)
+    axes[6].set_xlabel("time (s)")
 
     fig.savefig(out_png, dpi=160)
     plt.close(fig)

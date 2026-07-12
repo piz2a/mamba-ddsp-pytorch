@@ -110,18 +110,19 @@ class Reverb(nn.Module):
 
 class StyleEncoder(nn.Module):
     def __init__(self, n_pluck, n_expression, embedding_size, z_size,
-                 hidden_size):
+                 hidden_size, n_event_controls=0):
         super().__init__()
         self.pluck = nn.Embedding(n_pluck, embedding_size)
         self.expression = nn.Embedding(n_expression, embedding_size)
+        self.n_event_controls = n_event_controls
         self.net = nn.Sequential(
-            mlp(2 * embedding_size, hidden_size, 2),
+            mlp(2 * embedding_size + n_event_controls, hidden_size, 2),
             nn.Linear(hidden_size, z_size),
             nn.LayerNorm(z_size),
             nn.LeakyReLU(),
         )
 
-    def forward(self, pluck, expression):
+    def forward(self, pluck, expression, event_controls=None):
         if pluck.ndim == 3:
             pluck = pluck.squeeze(-1)
         if expression.ndim == 3:
@@ -129,10 +130,20 @@ class StyleEncoder(nn.Module):
 
         pluck = pluck.long()
         expression = expression.long()
-        style = torch.cat([
+        features = [
             self.pluck(pluck),
             self.expression(expression),
-        ], dim=-1)
+        ]
+        if self.n_event_controls:
+            if event_controls is None:
+                shape = (*pluck.shape, self.n_event_controls)
+                event_controls = torch.zeros(
+                    shape,
+                    dtype=self.pluck.weight.dtype,
+                    device=pluck.device,
+                )
+            features.append(event_controls.to(self.pluck.weight.dtype))
+        style = torch.cat(features, dim=-1)
         return self.net(style)
 
 
@@ -141,12 +152,13 @@ class DDSP(nn.Module):
                  block_size, recurrent_type="gru", mamba_d_state=16,
                  mamba_d_conv=4, mamba_expand=2, n_pluck=0,
                  n_expression=0, style_embedding_size=16, z_size=16,
-                 style_hidden_size=None):
+                 style_hidden_size=None, use_note_events=False):
         super().__init__()
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
         self.register_buffer("block_size", torch.tensor(block_size))
         self.recurrent_type = recurrent_type
         self.use_style = n_pluck > 0 and n_expression > 0 and z_size > 0
+        self.use_note_events = bool(use_note_events)
         self.z_size = z_size if self.use_style else 0
 
         if self.use_style:
@@ -156,6 +168,7 @@ class DDSP(nn.Module):
                 style_embedding_size,
                 z_size,
                 style_hidden_size or hidden_size,
+                n_event_controls=2 if self.use_note_events else 0,
             )
         else:
             self.style_encoder = None
@@ -228,7 +241,7 @@ class DDSP(nn.Module):
         else:
             self.recurrent.reset_state()
 
-    def _encode_style(self, pitch, pluck, expression):
+    def _encode_style(self, pitch, pluck, expression, onset, offset):
         if not self.use_style:
             return None
 
@@ -237,10 +250,29 @@ class DDSP(nn.Module):
             pluck = torch.zeros(shape, dtype=torch.long, device=pitch.device)
         if expression is None:
             expression = torch.zeros(shape, dtype=torch.long, device=pitch.device)
-        return self.style_encoder(pluck.to(pitch.device), expression.to(pitch.device))
+        event_controls = None
+        if self.use_note_events:
+            if onset is None:
+                onset = torch.zeros((*shape, 1), dtype=pitch.dtype, device=pitch.device)
+            if offset is None:
+                offset = torch.zeros((*shape, 1), dtype=pitch.dtype, device=pitch.device)
+            if onset.ndim == 2:
+                onset = onset.unsqueeze(-1)
+            if offset.ndim == 2:
+                offset = offset.unsqueeze(-1)
+            event_controls = torch.cat([
+                onset.to(pitch.device, dtype=pitch.dtype),
+                offset.to(pitch.device, dtype=pitch.dtype),
+            ], dim=-1)
+        return self.style_encoder(
+            pluck.to(pitch.device),
+            expression.to(pitch.device),
+            event_controls,
+        )
 
-    def _decoder_hidden(self, pitch, loudness, pluck, expression, realtime):
-        z = self._encode_style(pitch, pluck, expression)
+    def _decoder_hidden(self, pitch, loudness, pluck, expression, onset,
+                        offset, realtime):
+        z = self._encode_style(pitch, pluck, expression, onset, offset)
         inputs = [
             self.in_mlps[0](pitch),
             self.in_mlps[1](loudness),
@@ -260,12 +292,15 @@ class DDSP(nn.Module):
             outputs.append(z)
         return self.out_mlp(torch.cat(outputs, -1))
 
-    def forward(self, pitch, loudness, pluck=None, expression=None):
+    def forward(self, pitch, loudness, pluck=None, expression=None,
+                onset=None, offset=None):
         hidden = self._decoder_hidden(
             pitch,
             loudness,
             pluck,
             expression,
+            onset,
+            offset,
             realtime=False,
         )
 
@@ -308,12 +343,15 @@ class DDSP(nn.Module):
 
         return signal
 
-    def realtime_forward(self, pitch, loudness, pluck=None, expression=None):
+    def realtime_forward(self, pitch, loudness, pluck=None, expression=None,
+                         onset=None, offset=None):
         hidden = self._decoder_hidden(
             pitch,
             loudness,
             pluck,
             expression,
+            onset,
+            offset,
             realtime=True,
         )
 

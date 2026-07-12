@@ -102,6 +102,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         trim_pad_seconds=0.012,
         edge_fade_seconds=0.004,
         release_fade_seconds=0.035,
+        event_width_seconds=0.032,
         include_expression_styles=EXPRESSION_STYLES,
         include_string_numbers=(1, 2, 3, 4),
         cache_size=384,
@@ -143,6 +144,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.trim_pad_samples = int(float(trim_pad_seconds) * sampling_rate)
         self.edge_fade_samples = int(float(edge_fade_seconds) * sampling_rate)
         self.release_fade_samples = int(float(release_fade_seconds) * sampling_rate)
+        self.event_width_samples = max(
+            1,
+            int(float(event_width_seconds) * sampling_rate),
+        )
         self.include_expression_styles = {
             str(expression)
             for expression in include_expression_styles
@@ -420,6 +425,27 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             frequencies[frame_events],
         )
 
+    def _event_pulse_track(self, samples):
+        frame_positions = (
+            np.arange(self.frames, dtype=np.float32) * self.block_size
+            + self.block_size / 2
+        )
+        track = np.zeros(self.frames, dtype=np.float32)
+        width = float(self.event_width_samples)
+        for sample in samples:
+            distance = np.abs(frame_positions - float(sample))
+            pulse = np.maximum(0.0, 1.0 - distance / width)
+            track = np.maximum(track, pulse.astype(np.float32))
+        return track
+
+    def _note_event_tracks(self, intervals):
+        onset_samples = [interval["start_sample"] for interval in intervals]
+        offset_samples = [interval["end_sample"] for interval in intervals]
+        return (
+            self._event_pulse_track(onset_samples),
+            self._event_pulse_track(offset_samples),
+        )
+
     def _riff(self, rng):
         audio = np.zeros(0, dtype=np.float32)
         events = []
@@ -437,11 +463,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
                 audio = audio * (0.99 / peak)
 
         pluck, expression, label_pitch = self._label_tracks(events)
-        return audio, pluck, expression, label_pitch, self._intervals(events)
+        intervals = self._intervals(events)
+        onset, offset = self._note_event_tracks(intervals)
+        return audio, pluck, expression, label_pitch, onset, offset, intervals
 
     def __getitem__(self, idx):
         rng = self._choose_rng(idx)
-        audio, pluck, expression, label_pitch, _ = self._riff(rng)
+        audio, pluck, expression, label_pitch, onset, offset, _ = self._riff(rng)
 
         loudness = extract_loudness(
             audio,
@@ -471,11 +499,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             torch.from_numpy(loudness),
             torch.from_numpy(pluck),
             torch.from_numpy(expression),
+            torch.from_numpy(onset),
+            torch.from_numpy(offset),
         )
 
     def generate_debug_riff(self, idx=0, pitch_source=None):
         rng = self._choose_rng(idx)
-        audio, pluck, expression, label_pitch, intervals = self._riff(rng)
+        audio, pluck, expression, label_pitch, onset, offset, intervals = self._riff(rng)
         loudness = extract_loudness(
             audio,
             self.sampling_rate,
@@ -506,9 +536,12 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             "loudness": loudness,
             "pluck": pluck,
             "expression": expression,
+            "onset": onset,
+            "offset": offset,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),
             "sampling_rate": self.sampling_rate,
             "block_size": self.block_size,
+            "pitch_source": pitch_source,
         }

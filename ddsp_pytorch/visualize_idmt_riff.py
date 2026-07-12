@@ -119,11 +119,11 @@ def plot_debug(data, out_png, out_zoom_png=None):
     spec_db = li.amplitude_to_db(np.abs(stft), ref=np.max)
 
     fig, axes = plt.subplots(
-        5,
+        6,
         1,
-        figsize=(16, 11),
+        figsize=(16, 12.5),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.6, 1.0, 1.0, 2.2, 0.9]},
+        gridspec_kw={"height_ratios": [1.5, 0.9, 0.9, 0.7, 2.0, 0.85]},
         constrained_layout=True,
     )
 
@@ -149,7 +149,8 @@ def plot_debug(data, out_png, out_zoom_png=None):
     ax.set_ylabel("loudness")
 
     ax = axes[2]
-    ax.plot(frame_time, data["pitch"], label="pitch", color="#0b7285", lw=1.0)
+    pitch_label = f"pitch input ({data.get('pitch_source', 'unknown')})"
+    ax.plot(frame_time, data["pitch"], label=pitch_label, color="#0b7285", lw=1.0)
     ax.plot(
         frame_time,
         data["label_pitch"],
@@ -162,6 +163,13 @@ def plot_debug(data, out_png, out_zoom_png=None):
     ax.set_ylabel("Hz")
 
     ax = axes[3]
+    ax.plot(frame_time, data["onset"], color="#2f9e44", lw=1.0, label="onset")
+    ax.plot(frame_time, data["offset"], color="#c92a2a", lw=1.0, label="offset")
+    ax.set_ylim(-0.05, 1.05)
+    ax.legend(loc="upper right", frameon=False)
+    ax.set_ylabel("events")
+
+    ax = axes[4]
     img = librosa.display.specshow(
         spec_db,
         sr=sr,
@@ -175,7 +183,7 @@ def plot_debug(data, out_png, out_zoom_png=None):
     fig.colorbar(img, ax=ax, format="%+2.0f dB", pad=0.01)
     ax.set_ylabel("STFT")
 
-    ax = axes[4]
+    ax = axes[5]
     ax.set_ylim(0, 2)
     ax.set_yticks([0.5, 1.5])
     ax.set_yticklabels(["ES", "PS"])

@@ -3,7 +3,7 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 from ddsp.model import DDSP
 from effortless_config import Config
-from os import makedirs, path
+from os import listdir, makedirs, path
 import itertools
 import csv
 from idmt_bass import IDMTBassRiffDataset
@@ -13,6 +13,14 @@ from ddsp.core import multiscale_fft, safe_log, mean_std_loudness
 import soundfile as sf
 from ddsp.utils import get_scheduler
 import numpy as np
+
+
+def frame_log_rms(signal, block_size):
+    usable = signal.shape[-1] - (signal.shape[-1] % block_size)
+    signal = signal[..., :usable]
+    frames = signal.reshape(signal.shape[0], -1, block_size)
+    rms = torch.sqrt(torch.mean(frames * frames, dim=-1) + 1e-7)
+    return torch.log(rms + 1e-7)
 
 
 class args(Config):
@@ -25,6 +33,7 @@ class args(Config):
     STOP_LR = 1e-4
     DECAY_OVER = 400000
     DEVICE = None
+    OVERWRITE = False
 
 
 args.parse_args()
@@ -102,12 +111,24 @@ config["data"]["mean_loudness"] = mean_loudness
 config["data"]["std_loudness"] = std_loudness
 
 run_dir = path.join(args.ROOT, args.NAME)
+if path.isdir(run_dir) and listdir(run_dir) and not args.OVERWRITE:
+    raise FileExistsError(
+        f"run directory already exists and is not empty: {run_dir}. "
+        "Use a new --name, or pass --overwrite true intentionally."
+    )
 makedirs(run_dir, exist_ok=True)
 writer = SummaryWriter(run_dir, flush_secs=20)
 loss_csv_path = path.join(run_dir, "loss.csv")
 loss_csv = open(loss_csv_path, "w", newline="")
 loss_writer = csv.writer(loss_csv)
-loss_writer.writerow(["step", "loss"])
+loss_writer.writerow([
+    "step",
+    "loss",
+    "spectral_loss",
+    "rms_loss",
+    "target_rms",
+    "reconstruction_rms",
+])
 
 with open(path.join(run_dir, "config.yaml"), "w") as out_config:
     yaml.safe_dump(config, out_config)
@@ -135,10 +156,20 @@ for e in tqdm(range(epochs)):
             s, p, l = batch
             pluck = None
             expression = None
+            onset = None
+            offset = None
         elif len(batch) == 5:
             s, p, l, pluck, expression = batch
             pluck = pluck.to(device)
             expression = expression.to(device)
+            onset = None
+            offset = None
+        elif len(batch) == 7:
+            s, p, l, pluck, expression, onset, offset = batch
+            pluck = pluck.to(device)
+            expression = expression.to(device)
+            onset = onset.unsqueeze(-1).to(device)
+            offset = offset.unsqueeze(-1).to(device)
         else:
             raise ValueError(f"unexpected batch with {len(batch)} tensors")
 
@@ -148,7 +179,7 @@ for e in tqdm(range(epochs)):
 
         l = (l - mean_loudness) / std_loudness
 
-        y = model(p, l, pluck, expression).squeeze(-1)
+        y = model(p, l, pluck, expression, onset, offset).squeeze(-1)
 
         ori_stft = multiscale_fft(
             s,
@@ -161,11 +192,21 @@ for e in tqdm(range(epochs)):
             config["train"]["overlap"],
         )
 
-        loss = 0
+        spectral_loss = 0
         for s_x, s_y in zip(ori_stft, rec_stft):
             lin_loss = (s_x - s_y).abs().mean()
             log_loss = (safe_log(s_x) - safe_log(s_y)).abs().mean()
-            loss = loss + lin_loss + log_loss
+            spectral_loss = spectral_loss + lin_loss + log_loss
+
+        rms_loss = torch.tensor(0.0, device=device)
+        rms_loss_weight = float(config["train"].get("rms_loss_weight", 0.0))
+        if rms_loss_weight:
+            rms_loss = (
+                frame_log_rms(s, config["preprocess"]["block_size"])
+                - frame_log_rms(y, config["preprocess"]["block_size"])
+            ).abs().mean()
+
+        loss = spectral_loss + rms_loss_weight * rms_loss
 
         opt.zero_grad()
         loss.backward()
@@ -177,8 +218,22 @@ for e in tqdm(range(epochs)):
             )
         opt.step()
 
+        target_rms = torch.sqrt(torch.mean(s * s) + 1e-7)
+        reconstruction_rms = torch.sqrt(torch.mean(y * y) + 1e-7)
+
         writer.add_scalar("loss", loss.item(), step)
-        loss_writer.writerow([step, loss.item()])
+        writer.add_scalar("spectral_loss", spectral_loss.item(), step)
+        writer.add_scalar("rms_loss", rms_loss.item(), step)
+        writer.add_scalar("target_rms", target_rms.item(), step)
+        writer.add_scalar("reconstruction_rms", reconstruction_rms.item(), step)
+        loss_writer.writerow([
+            step,
+            loss.item(),
+            spectral_loss.item(),
+            rms_loss.item(),
+            target_rms.item(),
+            reconstruction_rms.item(),
+        ])
         loss_csv.flush()
 
         step += 1
