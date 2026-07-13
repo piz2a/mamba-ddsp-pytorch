@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 import yaml
 
-from idmt_bass import IDMTBassRiffDataset
+from idmt_bass import IDMTBassNoteDataset, IDMTBassRiffDataset
 
 
 PLUCK_COLORS = {
@@ -39,7 +39,12 @@ def make_dataset(config, args):
     if args.pitch_source:
         idmt_config["pitch_source"] = args.pitch_source
 
-    return IDMTBassRiffDataset(
+    dataset_cls = (
+        IDMTBassNoteDataset
+        if config.get("data", {}).get("dataset") == "idmt_bass_note"
+        else IDMTBassRiffDataset
+    )
+    return dataset_cls(
         data_location=config["data"]["data_location"],
         sampling_rate=config["preprocess"]["sampling_rate"],
         block_size=config["preprocess"]["block_size"],
@@ -55,6 +60,7 @@ def write_intervals(path, intervals):
         "duration_seconds",
         "pluck",
         "expression",
+        "articulation",
         "frequency",
         "string",
         "fret",
@@ -119,11 +125,13 @@ def plot_debug(data, out_png, out_zoom_png=None):
     spec_db = li.amplitude_to_db(np.abs(stft), ref=np.max)
 
     fig, axes = plt.subplots(
-        6,
+        7,
         1,
-        figsize=(16, 12.5),
+        figsize=(16, 14.0),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.5, 0.9, 0.9, 0.7, 2.0, 0.85]},
+        gridspec_kw={
+            "height_ratios": [1.5, 0.9, 0.9, 0.7, 0.8, 2.0, 1.05],
+        },
         constrained_layout=True,
     )
 
@@ -170,6 +178,16 @@ def plot_debug(data, out_png, out_zoom_png=None):
     ax.set_ylabel("events")
 
     ax = axes[4]
+    ax.plot(frame_time, data.get("gate", np.ones_like(data["onset"])),
+            color="#343a40", lw=1.0, label="gate")
+    ax.plot(frame_time, data.get("note_age", np.zeros_like(data["onset"])),
+            color="#5f3dc4", lw=1.0, label="note age")
+    ax.plot(frame_time, data.get("note_progress", np.zeros_like(data["onset"])),
+            color="#f08c00", lw=1.0, label="progress")
+    ax.legend(loc="upper right", frameon=False, ncol=3)
+    ax.set_ylabel("shape")
+
+    ax = axes[5]
     img = librosa.display.specshow(
         spec_db,
         sr=sr,
@@ -183,15 +201,15 @@ def plot_debug(data, out_png, out_zoom_png=None):
     fig.colorbar(img, ax=ax, format="%+2.0f dB", pad=0.01)
     ax.set_ylabel("STFT")
 
-    ax = axes[5]
-    ax.set_ylim(0, 2)
-    ax.set_yticks([0.5, 1.5])
-    ax.set_yticklabels(["ES", "PS"])
+    ax = axes[6]
+    ax.set_ylim(0, 3)
+    ax.set_yticks([0.5, 1.5, 2.5])
+    ax.set_yticklabels(["ART", "ES", "PS"])
     for interval in intervals:
         start = interval["start_seconds"]
         end = interval["end_seconds"]
         ax.barh(
-            1.5,
+            2.5,
             end - start,
             left=start,
             height=0.8,
@@ -200,7 +218,7 @@ def plot_debug(data, out_png, out_zoom_png=None):
             linewidth=0.5,
         )
         ax.barh(
-            0.5,
+            1.5,
             end - start,
             left=start,
             height=0.8,
@@ -208,10 +226,23 @@ def plot_debug(data, out_png, out_zoom_png=None):
             edgecolor="white",
             linewidth=0.5,
         )
+        ax.barh(
+            0.5,
+            end - start,
+            left=start,
+            height=0.8,
+            color=PLUCK_COLORS.get(interval["pluck"], "#999999"),
+            edgecolor="white",
+            linewidth=0.5,
+            alpha=0.65,
+        )
         if end - start > 0.28:
-            ax.text((start + end) * 0.5, 1.5, interval["pluck"],
+            ax.text((start + end) * 0.5, 2.5, interval["pluck"],
                     ha="center", va="center", fontsize=8)
-            ax.text((start + end) * 0.5, 0.5, interval["expression"],
+            ax.text((start + end) * 0.5, 1.5, interval["expression"],
+                    ha="center", va="center", fontsize=8)
+            ax.text((start + end) * 0.5, 0.5,
+                    interval.get("articulation", interval["expression"]),
                     ha="center", va="center", fontsize=8)
     ax.set_xlim(0, duration)
     ax.set_xlabel("time (s)")
@@ -265,6 +296,8 @@ def summarize(data):
         "median_crossfade_ms": float(np.median(crossfades) / data["sampling_rate"] * 1000),
         "pluck_labels": data["pluck_labels"],
         "expression_labels": data["expression_labels"],
+        "articulation_labels": data.get("articulation_labels", []),
+        "gate_active_ratio": float(np.mean(data.get("gate", np.ones_like(data["onset"])))),
     }
 
 
@@ -284,7 +317,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = make_dataset(config, args)
-    data = dataset.generate_debug_riff(args.index, pitch_source=args.pitch_source)
+    data = dataset.generate_debug_example(args.index, pitch_source=args.pitch_source)
 
     wav_path = out_dir / "riff.wav"
     png_path = out_dir / "riff_debug.png"

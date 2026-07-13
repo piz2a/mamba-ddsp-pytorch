@@ -15,7 +15,7 @@ import yaml
 
 from ddsp.core import multiscale_fft, safe_log
 from ddsp.model import DDSP
-from idmt_bass import IDMTBassRiffDataset
+from idmt_bass import IDMTBassNoteDataset, IDMTBassRiffDataset
 from visualize_idmt_riff import (
     EXPRESSION_COLORS,
     PLUCK_COLORS,
@@ -31,7 +31,12 @@ def make_dataset(config, seed, pitch_source):
     if pitch_source:
         idmt_config["pitch_source"] = pitch_source
 
-    return IDMTBassRiffDataset(
+    dataset_cls = (
+        IDMTBassNoteDataset
+        if config.get("data", {}).get("dataset") == "idmt_bass_note"
+        else IDMTBassRiffDataset
+    )
+    return dataset_cls(
         data_location=config["data"]["data_location"],
         sampling_rate=config["preprocess"]["sampling_rate"],
         block_size=config["preprocess"]["block_size"],
@@ -44,6 +49,7 @@ def load_model(config, run_dir, dataset, device):
     model_config = dict(config["model"])
     model_config.setdefault("n_pluck", dataset.n_pluck)
     model_config.setdefault("n_expression", dataset.n_expression)
+    model_config.setdefault("n_articulation", dataset.n_articulation)
     model = DDSP(**model_config).to(device)
     state = torch.load(run_dir / "state.pth", map_location=device)
     model.load_state_dict(state)
@@ -58,21 +64,49 @@ def reconstruct(model, config, data, device):
         loudness - float(config["data"]["mean_loudness"])
     ) / float(config["data"]["std_loudness"])
     loudness = loudness.to(device)
-    pluck = torch.from_numpy(data["pluck"]).long().unsqueeze(0).to(device)
-    expression = torch.from_numpy(data["expression"]).long().unsqueeze(0).to(device)
     onset = torch.from_numpy(data["onset"]).float().unsqueeze(0).unsqueeze(-1).to(device)
     offset = torch.from_numpy(data["offset"]).float().unsqueeze(0).unsqueeze(-1).to(device)
 
     with torch.no_grad():
-        audio = model(
-            pitch,
-            loudness,
-            pluck,
-            expression,
-            onset,
-            offset,
-        ).squeeze(0).squeeze(-1)
-    return audio.detach().cpu().numpy().astype(np.float32)
+        if config["model"].get("architecture") == "bass_ddsp_v2":
+            articulation = torch.from_numpy(data["articulation"]).long()
+            articulation = articulation.unsqueeze(0).to(device)
+            gate = torch.from_numpy(data["gate"]).float().unsqueeze(0)
+            gate = gate.unsqueeze(-1).to(device)
+            note_age = torch.from_numpy(data["note_age"]).float().unsqueeze(0)
+            note_age = note_age.unsqueeze(-1).to(device)
+            note_progress = torch.from_numpy(data["note_progress"]).float().unsqueeze(0)
+            note_progress = note_progress.unsqueeze(-1).to(device)
+            audio = model(
+                pitch,
+                loudness,
+                articulation=articulation,
+                onset=onset,
+                offset=offset,
+                gate=gate,
+                note_age=note_age,
+                note_progress=note_progress,
+            ).squeeze(0).squeeze(-1)
+        else:
+            pluck = torch.from_numpy(data["pluck"]).long().unsqueeze(0).to(device)
+            expression = torch.from_numpy(data["expression"]).long().unsqueeze(0).to(device)
+            audio = model(
+                pitch,
+                loudness,
+                pluck,
+                expression,
+                onset,
+                offset,
+            ).squeeze(0).squeeze(-1)
+
+    branch_summary = {}
+    for name, branch in getattr(model, "last_branch_outputs", {}).items():
+        branch_summary[f"{name}_rms"] = float(
+            torch.sqrt(torch.mean(branch.detach() * branch.detach()) + 1e-7)
+            .detach()
+            .cpu()
+        )
+    return audio.detach().cpu().numpy().astype(np.float32), branch_summary
 
 
 def spectral_loss(target, reconstruction, scales, overlap, device):
@@ -156,6 +190,8 @@ def plot_reconstruction(data, reconstruction, out_png):
 
     axes[3].plot(frame_time, data["onset"], color="#2f9e44", lw=1.0, label="onset")
     axes[3].plot(frame_time, data["offset"], color="#c92a2a", lw=1.0, label="offset")
+    if "gate" in data:
+        axes[3].plot(frame_time, data["gate"], color="#343a40", lw=0.8, label="gate")
     axes[3].set_ylim(-0.05, 1.05)
     axes[3].legend(loc="upper right", frameon=False)
     axes[3].set_ylabel("events")
@@ -241,9 +277,9 @@ def main():
 
     device = torch.device(args.device)
     dataset = make_dataset(config, args.seed, args.pitch_source)
-    data = dataset.generate_debug_riff(args.index, pitch_source=args.pitch_source)
+    data = dataset.generate_debug_example(args.index, pitch_source=args.pitch_source)
     model = load_model(config, run_dir, dataset, device)
-    reconstruction = reconstruct(model, config, data, device)
+    reconstruction, branch_summary = reconstruct(model, config, data, device)
 
     loss = spectral_loss(
         data["audio"],
@@ -269,6 +305,7 @@ def main():
     summary["reconstruction_peak"] = float(np.max(np.abs(reconstruction)))
     summary["reconstruction_rms"] = float(np.sqrt(np.mean(reconstruction ** 2)))
     summary["spectral_loss"] = loss
+    summary.update(branch_summary)
     with open(out_dir / "summary.json", "w") as handle:
         json.dump({"summary": summary, "intervals": data["intervals"]}, handle, indent=2)
 

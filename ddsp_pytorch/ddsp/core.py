@@ -10,6 +10,12 @@ def safe_log(x):
     return torch.log(x + 1e-7)
 
 
+def _as_int(value):
+    if torch.is_tensor(value):
+        return int(value.detach().cpu().item())
+    return int(value)
+
+
 @torch.no_grad()
 def mean_std_loudness(dataset):
     mean = 0
@@ -41,6 +47,7 @@ def multiscale_fft(signal, scales, overlap):
 
 
 def resample(x, factor: int):
+    factor = _as_int(factor)
     batch, frame, channel = x.shape
     x = x.permute(0, 2, 1).reshape(batch * channel, 1, frame)
 
@@ -61,6 +68,7 @@ def resample(x, factor: int):
 
 
 def upsample(signal, factor):
+    factor = _as_int(factor)
     signal = signal.permute(0, 2, 1)
     signal = nn.functional.interpolate(signal, size=signal.shape[-1] * factor)
     return signal.permute(0, 2, 1)
@@ -202,6 +210,7 @@ def harmonic_synth(pitch, amplitudes, sampling_rate):
 
 
 def amp_to_impulse_response(amp, target_size):
+    target_size = _as_int(target_size)
     amp = torch.stack([amp, torch.zeros_like(amp)], -1)
     amp = torch.view_as_complex(amp)
     amp = fft.irfft(amp)
@@ -213,7 +222,7 @@ def amp_to_impulse_response(amp, target_size):
 
     amp = amp * win
 
-    amp = nn.functional.pad(amp, (0, int(target_size) - int(filter_size)))
+    amp = nn.functional.pad(amp, (0, target_size - int(filter_size)))
     amp = torch.roll(amp, -filter_size // 2, -1)
 
     return amp

@@ -56,6 +56,18 @@ After a training run, render a target/reconstruction debug bundle:
 python visualize_ddsp_run.py --run runs/idmt_bass_midpoint_train --out-dir runs/idmt_bass_midpoint_train/visuals --seed 4321 --pitch-source torchcrepe
 ```
 
+## Bass-DDSP v2 single-note training
+
+For the transient-assisted bass architecture, see
+`Scat-to-Bass-PLAN.md`. The first milestone trains observed articulation
+classes on isolated notes:
+
+```bash
+python visualize_idmt_riff.py --config config_idmt_bass_v2_single_note.yaml --out-dir debug/idmt_bass_v2_single_note --seed 1234 --pitch-source labels
+python train.py --config config_idmt_bass_v2_single_note.yaml --name idmt_bass_v2_single_note_001 --steps 1000 --batch 4
+python visualize_ddsp_run.py --run runs/idmt_bass_v2_single_note_001 --out-dir runs/idmt_bass_v2_single_note_001/visuals --seed 4321 --pitch-source labels
+```
+
 Once trained, export it using
 
 ```bash

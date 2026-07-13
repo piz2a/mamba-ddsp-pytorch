@@ -13,6 +13,17 @@ from ddsp.core import extract_loudness, extract_pitch
 
 PLUCKING_STYLES = ("FS", "MU", "PK", "SP", "ST")
 EXPRESSION_STYLES = ("NO", "BE", "DN", "HA", "VI")
+OBSERVED_ARTICULATION_STYLES = (
+    "FS_NO",
+    "MU_NO",
+    "PK_NO",
+    "SP_NO",
+    "ST_NO",
+    "FS_BE",
+    "FS_DN",
+    "FS_HA",
+    "FS_VI",
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +34,10 @@ class BassNote:
     string: int
     fret: int
     frequency: float
+
+    @property
+    def articulation(self):
+        return f"{self.pluck}_{self.expression}"
 
 
 def bass_note_frequency(string_number, fret_number):
@@ -110,6 +125,9 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         pitch_fmin=40.0,
         pitch_fmax=600.0,
         peak_normalize=True,
+        label_mode="pluck_expression",
+        use_note_shape_controls=False,
+        note_age_clip_seconds=1.0,
         seed=None,
         **kwargs,
     ):
@@ -161,6 +179,14 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.pitch_fmin = float(pitch_fmin)
         self.pitch_fmax = float(pitch_fmax)
         self.peak_normalize = bool(peak_normalize)
+        self.label_mode = str(label_mode)
+        if self.label_mode not in {"pluck_expression", "observed_articulation"}:
+            raise ValueError(
+                "label_mode must be 'pluck_expression' or "
+                f"'observed_articulation', got {self.label_mode!r}"
+            )
+        self.use_note_shape_controls = bool(use_note_shape_controls)
+        self.note_age_clip_seconds = max(1e-4, float(note_age_clip_seconds))
         self.seed = None if seed is None else int(seed)
         self.frames = self.signal_length // self.block_size
         self._audio_cache = OrderedDict()
@@ -194,6 +220,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.expression_to_id = {
             label: idx for idx, label in enumerate(self.expression_labels)
         }
+        self.articulation_labels = _ordered_labels(
+            [note.articulation for note in self.notes],
+            OBSERVED_ARTICULATION_STYLES,
+        )
+        self.articulation_to_id = {
+            label: idx for idx, label in enumerate(self.articulation_labels)
+        }
 
     @property
     def n_pluck(self):
@@ -202,6 +235,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
     @property
     def n_expression(self):
         return len(self.expression_labels)
+
+    @property
+    def n_articulation(self):
+        return len(self.articulation_labels)
 
     def __len__(self):
         return self.examples_per_epoch
@@ -347,8 +384,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             "transition_end_sample": int(transition_start + crossfade),
             "pluck_id": int(self.pluck_to_id[note.pluck]),
             "expression_id": int(self.expression_to_id[note.expression]),
+            "articulation_id": int(self.articulation_to_id[note.articulation]),
             "pluck": note.pluck,
             "expression": note.expression,
+            "articulation": note.articulation,
             "frequency": float(note.frequency),
             "string": int(note.string),
             "fret": int(note.fret),
@@ -408,6 +447,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             [event["expression_id"] for event in events],
             dtype=np.int64,
         )
+        articulations = np.asarray(
+            [event["articulation_id"] for event in events],
+            dtype=np.int64,
+        )
         frequencies = np.asarray(
             [event["frequency"] for event in events],
             dtype=np.float32,
@@ -422,6 +465,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         return (
             plucks[frame_events],
             expressions[frame_events],
+            articulations[frame_events],
             frequencies[frame_events],
         )
 
@@ -446,6 +490,95 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             self._event_pulse_track(offset_samples),
         )
 
+    def _note_shape_tracks(self, intervals):
+        frame_positions = (
+            np.arange(self.frames, dtype=np.float32) * self.block_size
+            + self.block_size / 2
+        )
+        gate = np.zeros(self.frames, dtype=np.float32)
+        note_age = np.zeros(self.frames, dtype=np.float32)
+        note_progress = np.zeros(self.frames, dtype=np.float32)
+
+        clip_seconds = self.note_age_clip_seconds
+        for interval in intervals:
+            start = float(interval["start_sample"])
+            end = float(interval["end_sample"])
+            duration = max(1.0, end - start)
+            active = (frame_positions >= start) & (frame_positions < end)
+            if not np.any(active):
+                continue
+
+            age_seconds = (frame_positions[active] - start) / self.sampling_rate
+            gate[active] = 1.0
+            note_age[active] = np.minimum(age_seconds, clip_seconds)
+            note_progress[active] = np.clip(
+                (frame_positions[active] - start) / duration,
+                0.0,
+                1.0,
+            )
+
+        return gate, note_age, note_progress
+
+    def _pitch_track(self, audio, label_pitch):
+        if self.pitch_source == "labels":
+            return label_pitch.astype(np.float32)
+        if self.pitch_source == "torchcrepe":
+            return extract_pitch(
+                audio,
+                self.sampling_rate,
+                self.block_size,
+                fmin=self.pitch_fmin,
+                fmax=self.pitch_fmax,
+            ).astype(np.float32)
+        raise ValueError(
+            "pitch_source must be 'torchcrepe' or 'labels', "
+            f"got {self.pitch_source!r}"
+        )
+
+    def _format_item(
+        self,
+        audio,
+        pitch,
+        loudness,
+        pluck,
+        expression,
+        articulation,
+        onset,
+        offset,
+        gate,
+        note_age,
+        note_progress,
+    ):
+        if self.label_mode == "observed_articulation":
+            if self.use_note_shape_controls:
+                return (
+                    torch.from_numpy(audio),
+                    torch.from_numpy(pitch),
+                    torch.from_numpy(loudness),
+                    torch.from_numpy(articulation),
+                    torch.from_numpy(onset),
+                    torch.from_numpy(offset),
+                    torch.from_numpy(gate),
+                    torch.from_numpy(note_age),
+                    torch.from_numpy(note_progress),
+                )
+            return (
+                torch.from_numpy(audio),
+                torch.from_numpy(pitch),
+                torch.from_numpy(loudness),
+                torch.from_numpy(articulation),
+            )
+
+        return (
+            torch.from_numpy(audio),
+            torch.from_numpy(pitch),
+            torch.from_numpy(loudness),
+            torch.from_numpy(pluck),
+            torch.from_numpy(expression),
+            torch.from_numpy(onset),
+            torch.from_numpy(offset),
+        )
+
     def _riff(self, rng):
         audio = np.zeros(0, dtype=np.float32)
         events = []
@@ -462,14 +595,39 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             if peak > 0.99:
                 audio = audio * (0.99 / peak)
 
-        pluck, expression, label_pitch = self._label_tracks(events)
         intervals = self._intervals(events)
+        pluck, expression, articulation, label_pitch = self._label_tracks(events)
         onset, offset = self._note_event_tracks(intervals)
-        return audio, pluck, expression, label_pitch, onset, offset, intervals
+        gate, note_age, note_progress = self._note_shape_tracks(intervals)
+        return (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            intervals,
+        )
 
     def __getitem__(self, idx):
         rng = self._choose_rng(idx)
-        audio, pluck, expression, label_pitch, onset, offset, _ = self._riff(rng)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            _,
+        ) = self._riff(rng)
 
         loudness = extract_loudness(
             audio,
@@ -477,35 +635,36 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             self.block_size,
         ).astype(np.float32)
 
-        if self.pitch_source == "labels":
-            pitch = label_pitch.astype(np.float32)
-        elif self.pitch_source == "torchcrepe":
-            pitch = extract_pitch(
-                audio,
-                self.sampling_rate,
-                self.block_size,
-                fmin=self.pitch_fmin,
-                fmax=self.pitch_fmax,
-            ).astype(np.float32)
-        else:
-            raise ValueError(
-                "pitch_source must be 'torchcrepe' or 'labels', "
-                f"got {self.pitch_source!r}"
-            )
-
-        return (
-            torch.from_numpy(audio),
-            torch.from_numpy(pitch),
-            torch.from_numpy(loudness),
-            torch.from_numpy(pluck),
-            torch.from_numpy(expression),
-            torch.from_numpy(onset),
-            torch.from_numpy(offset),
+        pitch = self._pitch_track(audio, label_pitch)
+        return self._format_item(
+            audio,
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            articulation,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
         )
 
-    def generate_debug_riff(self, idx=0, pitch_source=None):
+    def generate_debug_example(self, idx=0, pitch_source=None):
         rng = self._choose_rng(idx)
-        audio, pluck, expression, label_pitch, onset, offset, intervals = self._riff(rng)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            intervals,
+        ) = self._riff(rng)
         loudness = extract_loudness(
             audio,
             self.sampling_rate,
@@ -536,11 +695,169 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             "loudness": loudness,
             "pluck": pluck,
             "expression": expression,
+            "articulation": articulation,
             "onset": onset,
             "offset": offset,
+            "gate": gate,
+            "note_age": note_age,
+            "note_progress": note_progress,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),
+            "articulation_labels": list(self.articulation_labels),
+            "sampling_rate": self.sampling_rate,
+            "block_size": self.block_size,
+            "pitch_source": pitch_source,
+        }
+
+    def generate_debug_riff(self, idx=0, pitch_source=None):
+        return self.generate_debug_example(idx, pitch_source)
+
+
+class IDMTBassNoteDataset(IDMTBassRiffDataset):
+    """Single-note IDMT-SMT-BASS dataset for Bass-DDSP v2 bootstrapping."""
+
+    def _single_note(self, rng):
+        note = rng.choice(self.notes)
+        note_audio, trim_info = self._random_note_audio(rng, note)
+        if note_audio.size <= 1:
+            note_audio = np.zeros(max(1, self.edge_fade_samples), dtype=np.float32)
+
+        active_samples = min(note_audio.shape[0], self.signal_length)
+        segment = note_audio[:active_samples].astype(np.float32, copy=True)
+        if note_audio.shape[0] > active_samples:
+            segment = self._apply_release_fade(segment)
+
+        audio = np.zeros(self.signal_length, dtype=np.float32)
+        audio[:active_samples] = segment
+        if self.peak_normalize:
+            peak = float(np.max(np.abs(audio)))
+            if peak > 0.99:
+                audio = audio * (0.99 / peak)
+
+        event = self._event(0, note, trim_info, 0, 0)
+        interval = dict(event)
+        interval["end_sample"] = int(active_samples)
+        interval["start_seconds"] = 0.0
+        interval["end_seconds"] = active_samples / self.sampling_rate
+        interval["duration_seconds"] = active_samples / self.sampling_rate
+        intervals = [interval]
+
+        pluck = np.full(
+            self.frames,
+            self.pluck_to_id[note.pluck],
+            dtype=np.int64,
+        )
+        expression = np.full(
+            self.frames,
+            self.expression_to_id[note.expression],
+            dtype=np.int64,
+        )
+        articulation = np.full(
+            self.frames,
+            self.articulation_to_id[note.articulation],
+            dtype=np.int64,
+        )
+        label_pitch = np.full(self.frames, note.frequency, dtype=np.float32)
+        onset, offset = self._note_event_tracks(intervals)
+        gate, note_age, note_progress = self._note_shape_tracks(intervals)
+        return (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            intervals,
+        )
+
+    def __getitem__(self, idx):
+        rng = self._choose_rng(idx)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            _,
+        ) = self._single_note(rng)
+
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+
+        pitch = self._pitch_track(audio, label_pitch)
+        return self._format_item(
+            audio,
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            articulation,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+        )
+
+    def generate_debug_example(self, idx=0, pitch_source=None):
+        rng = self._choose_rng(idx)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            intervals,
+        ) = self._single_note(rng)
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+
+        pitch_source = pitch_source or self.pitch_source
+        old_pitch_source = self.pitch_source
+        self.pitch_source = pitch_source
+        try:
+            pitch = self._pitch_track(audio, label_pitch)
+        finally:
+            self.pitch_source = old_pitch_source
+
+        return {
+            "audio": audio,
+            "pitch": pitch,
+            "label_pitch": label_pitch,
+            "loudness": loudness,
+            "pluck": pluck,
+            "expression": expression,
+            "articulation": articulation,
+            "onset": onset,
+            "offset": offset,
+            "gate": gate,
+            "note_age": note_age,
+            "note_progress": note_progress,
+            "intervals": intervals,
+            "pluck_labels": list(self.pluck_labels),
+            "expression_labels": list(self.expression_labels),
+            "articulation_labels": list(self.articulation_labels),
             "sampling_rate": self.sampling_rate,
             "block_size": self.block_size,
             "pitch_source": pitch_source,

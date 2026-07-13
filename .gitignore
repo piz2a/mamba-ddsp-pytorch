@@ -13,5 +13,17 @@ ddsp_pytorch/runs/
 ddsp_pytorch/export/
 ddsp_pytorch/debug/
 
+ddsp-guitar/data/
+ddsp-guitar/artefacts/
+ddsp-guitar/instrument-audio-datasets/
+ddsp-guitar/midi-to-audio/
+ddsp-guitar/guitarset_code/
+ddsp-guitar/wandb/
+ddsp-guitar/neural-guitar-synthesis/
+ddsp-guitar/GlotNet/
+ddsp-guitar/demo_audio/
+ddsp-guitar/fit-*/
+ddsp-guitar/checkpoints/
+
 data/MNIST
 .codex/

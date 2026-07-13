@@ -147,19 +147,72 @@ class StyleEncoder(nn.Module):
         return self.net(style)
 
 
+class ArticulationEncoder(nn.Module):
+    def __init__(self, n_articulation, embedding_size, z_size, hidden_size,
+                 n_controls):
+        super().__init__()
+        self.articulation = nn.Embedding(n_articulation, embedding_size)
+        self.n_controls = n_controls
+        self.net = nn.Sequential(
+            mlp(embedding_size + n_controls, hidden_size, 2),
+            nn.Linear(hidden_size, z_size),
+            nn.LayerNorm(z_size),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, articulation, controls):
+        if articulation.ndim == 3:
+            articulation = articulation.squeeze(-1)
+        articulation = articulation.long()
+        features = [self.articulation(articulation)]
+        if self.n_controls:
+            features.append(controls.to(self.articulation.weight.dtype))
+        return self.net(torch.cat(features, dim=-1))
+
+
 class DDSP(nn.Module):
     def __init__(self, hidden_size, n_harmonic, n_bands, sampling_rate,
                  block_size, recurrent_type="gru", mamba_d_state=16,
                  mamba_d_conv=4, mamba_expand=2, n_pluck=0,
                  n_expression=0, style_embedding_size=16, z_size=16,
-                 style_hidden_size=None, use_note_events=False):
+                 style_hidden_size=None, use_note_events=False,
+                 architecture="ddsp", n_articulation=0,
+                 articulation_embedding_size=24,
+                 articulation_hidden_size=None,
+                 use_note_shape_controls=False,
+                 use_transient_branch=False, use_sustain_branch=True,
+                 use_noise_branch=True, use_reverb=True,
+                 transient_seconds=0.20):
         super().__init__()
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
         self.register_buffer("block_size", torch.tensor(block_size))
+        self.architecture = architecture
+        self.use_bass_v2 = architecture == "bass_ddsp_v2"
+        if architecture not in {"ddsp", "bass_ddsp_v2"}:
+            raise ValueError(
+                "architecture must be 'ddsp' or 'bass_ddsp_v2', "
+                f"got {architecture!r}"
+            )
         self.recurrent_type = recurrent_type
-        self.use_style = n_pluck > 0 and n_expression > 0 and z_size > 0
+        self.use_style = (
+            not self.use_bass_v2
+            and n_pluck > 0
+            and n_expression > 0
+            and z_size > 0
+        )
+        self.use_articulation = (
+            self.use_bass_v2
+            and n_articulation > 0
+            and z_size > 0
+        )
         self.use_note_events = bool(use_note_events)
-        self.z_size = z_size if self.use_style else 0
+        self.use_note_shape_controls = bool(use_note_shape_controls)
+        self.use_transient_branch = bool(use_transient_branch)
+        self.use_sustain_branch = bool(use_sustain_branch)
+        self.use_noise_branch = bool(use_noise_branch)
+        self.use_reverb = bool(use_reverb)
+        self.transient_seconds = float(transient_seconds)
+        self.z_size = z_size if (self.use_style or self.use_articulation) else 0
 
         if self.use_style:
             self.style_encoder = StyleEncoder(
@@ -173,8 +226,27 @@ class DDSP(nn.Module):
         else:
             self.style_encoder = None
 
+        if self.use_bass_v2 and not self.use_articulation:
+            raise ValueError(
+                "bass_ddsp_v2 requires n_articulation > 0 and z_size > 0"
+            )
+        if self.use_articulation:
+            self.n_articulation_controls = (
+                5 if self.use_note_shape_controls else 2
+            )
+            self.articulation_encoder = ArticulationEncoder(
+                n_articulation,
+                articulation_embedding_size,
+                z_size,
+                articulation_hidden_size or style_hidden_size or hidden_size,
+                self.n_articulation_controls,
+            )
+        else:
+            self.n_articulation_controls = 0
+            self.articulation_encoder = None
+
         input_sizes = [1, 1]
-        if self.use_style:
+        if self.z_size:
             input_sizes.append(z_size)
         self.in_mlps = nn.ModuleList([
             mlp(input_size, hidden_size, 3)
@@ -204,7 +276,21 @@ class DDSP(nn.Module):
             nn.Linear(hidden_size, n_bands),
         ])
 
+        if self.use_bass_v2:
+            transient_samples = max(
+                1,
+                int(round(self.transient_seconds * int(sampling_rate))),
+            )
+            self.transient_gain = nn.Linear(hidden_size, 1)
+            self.transient_bank = nn.Parameter(
+                torch.randn(n_articulation, transient_samples) * 0.02
+            )
+        else:
+            self.transient_gain = None
+            self.transient_bank = None
+
         self.reverb = Reverb(sampling_rate, sampling_rate)
+        self.last_branch_outputs = {}
 
         if recurrent_type == "gru":
             self.register_buffer("cache_gru", torch.zeros(1, 1, hidden_size))
@@ -270,6 +356,51 @@ class DDSP(nn.Module):
             event_controls,
         )
 
+    def _frame_control(self, control, pitch, fill_value=0.0):
+        shape = (*pitch.shape[:2], 1)
+        if control is None:
+            return torch.full(
+                shape,
+                float(fill_value),
+                dtype=pitch.dtype,
+                device=pitch.device,
+            )
+        if control.ndim == 2:
+            control = control.unsqueeze(-1)
+        return control.to(pitch.device, dtype=pitch.dtype)
+
+    def _encode_articulation(
+        self,
+        pitch,
+        articulation,
+        onset,
+        offset,
+        gate,
+        note_age,
+        note_progress,
+    ):
+        if not self.use_articulation:
+            return None
+
+        shape = pitch.shape[:2]
+        if articulation is None:
+            articulation = torch.zeros(shape, dtype=torch.long, device=pitch.device)
+        if articulation.ndim == 3:
+            articulation = articulation.squeeze(-1)
+        articulation = articulation.to(pitch.device)
+
+        onset = self._frame_control(onset, pitch, 0.0)
+        offset = self._frame_control(offset, pitch, 0.0)
+        controls = [onset, offset]
+        if self.use_note_shape_controls:
+            controls.extend([
+                self._frame_control(gate, pitch, 1.0),
+                self._frame_control(note_age, pitch, 0.0),
+                self._frame_control(note_progress, pitch, 0.0),
+            ])
+
+        return self.articulation_encoder(articulation, torch.cat(controls, dim=-1))
+
     def _decoder_hidden(self, pitch, loudness, pluck, expression, onset,
                         offset, realtime):
         z = self._encode_style(pitch, pluck, expression, onset, offset)
@@ -292,8 +423,217 @@ class DDSP(nn.Module):
             outputs.append(z)
         return self.out_mlp(torch.cat(outputs, -1))
 
+    def _decoder_hidden_v2(
+        self,
+        pitch,
+        loudness,
+        articulation,
+        onset,
+        offset,
+        gate,
+        note_age,
+        note_progress,
+        realtime,
+    ):
+        z = self._encode_articulation(
+            pitch,
+            articulation,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+        )
+        inputs = [
+            self.in_mlps[0](pitch),
+            self.in_mlps[1](loudness),
+        ]
+        if z is not None:
+            inputs.append(self.in_mlps[2](z))
+
+        hidden = torch.cat(inputs, -1)
+        recurrent = (
+            self._run_recurrent_realtime(hidden)
+            if realtime
+            else self._run_recurrent(hidden)
+        )
+
+        outputs = [recurrent, pitch, loudness]
+        if z is not None:
+            outputs.append(z)
+        return self.out_mlp(torch.cat(outputs, -1))
+
+    def _harmonic_branch(self, hidden, pitch, gate, realtime=False):
+        param = scale_function(self.proj_matrices[0](hidden))
+
+        total_amp = param[..., :1]
+        amplitudes = param[..., 1:]
+
+        amplitudes = remove_above_nyquist(
+            amplitudes,
+            pitch,
+            self.sampling_rate,
+        )
+        amplitudes /= amplitudes.sum(-1, keepdim=True)
+        amplitudes *= total_amp
+
+        amplitudes = upsample(amplitudes, self.block_size)
+        pitch = upsample(pitch, self.block_size)
+        gate = upsample(gate, self.block_size)
+
+        if realtime:
+            n_harmonic = amplitudes.shape[-1]
+            omega = torch.cumsum(2 * math.pi * pitch / self.sampling_rate, 1)
+            omega = omega + self.phase
+            self.phase.copy_(omega[0, -1, 0] % (2 * math.pi))
+            omegas = omega * torch.arange(1, n_harmonic + 1).to(omega)
+            harmonic = (torch.sin(omegas) * amplitudes).sum(-1, keepdim=True)
+        else:
+            harmonic = harmonic_synth(pitch, amplitudes, self.sampling_rate)
+
+        return harmonic * gate
+
+    def _noise_branch(self, hidden, gate):
+        param = scale_function(self.proj_matrices[1](hidden) - 5)
+
+        impulse = amp_to_impulse_response(param, self.block_size)
+        block_size = int(self.block_size.detach().cpu().item())
+        noise = torch.rand(
+            impulse.shape[0],
+            impulse.shape[1],
+            block_size,
+        ).to(impulse) * 2 - 1
+
+        noise = fft_convolve(noise, impulse).contiguous()
+        noise = noise.reshape(noise.shape[0], -1, 1)
+        gate = upsample(gate, self.block_size)
+        return noise * gate
+
+    def _transient_branch(self, hidden, articulation, gate, note_age):
+        if self.transient_bank is None:
+            return None
+
+        block_size = int(self.block_size.detach().cpu().item())
+        length = hidden.shape[1] * block_size
+        gate_audio = upsample(gate, self.block_size)[:, :length]
+        note_age_audio = upsample(note_age, self.block_size)[:, :length]
+        gain = scale_function(self.transient_gain(hidden))
+        gain = upsample(gain, self.block_size)[:, :length]
+
+        if articulation is None:
+            articulation = torch.zeros(
+                hidden.shape[:2],
+                dtype=torch.long,
+                device=hidden.device,
+            )
+        if articulation.ndim == 3:
+            articulation = articulation.squeeze(-1)
+        articulation_audio = articulation.to(hidden.device).long()
+        articulation_audio = articulation_audio.repeat_interleave(
+            block_size,
+            dim=1,
+        )[:, :length]
+
+        age_seconds = note_age_audio.squeeze(-1).clamp_min(0.0)
+        sample_index = (age_seconds * self.sampling_rate).long()
+        sample_index = sample_index.clamp(0, self.transient_bank.shape[1] - 1)
+        articulation_audio = articulation_audio.clamp(
+            0,
+            self.transient_bank.shape[0] - 1,
+        )
+
+        waveform = self.transient_bank[
+            articulation_audio.reshape(-1),
+            sample_index.reshape(-1),
+        ].reshape(hidden.shape[0], length, 1)
+
+        envelope = (
+            1.0 - age_seconds.unsqueeze(-1) / max(self.transient_seconds, 1e-4)
+        ).clamp(0.0, 1.0) ** 2
+        return waveform * envelope * gate_audio * gain
+
+    def _forward_bass_v2(
+        self,
+        pitch,
+        loudness,
+        articulation=None,
+        onset=None,
+        offset=None,
+        gate=None,
+        note_age=None,
+        note_progress=None,
+        realtime=False,
+    ):
+        gate = self._frame_control(gate, pitch, 1.0)
+        note_age = self._frame_control(note_age, pitch, 0.0)
+        note_progress = self._frame_control(note_progress, pitch, 0.0)
+
+        hidden = self._decoder_hidden_v2(
+            pitch,
+            loudness,
+            articulation,
+            onset,
+            offset,
+            gate,
+            note_age,
+            note_progress,
+            realtime,
+        )
+
+        block_size = int(self.block_size.detach().cpu().item())
+        length = hidden.shape[1] * block_size
+        zero = torch.zeros(
+            hidden.shape[0],
+            length,
+            1,
+            dtype=hidden.dtype,
+            device=hidden.device,
+        )
+
+        harmonic = (
+            self._harmonic_branch(hidden, pitch, gate, realtime)
+            if self.use_sustain_branch
+            else zero
+        )
+        noise = (
+            self._noise_branch(hidden, gate)
+            if self.use_noise_branch
+            else zero
+        )
+        transient = (
+            self._transient_branch(hidden, articulation, gate, note_age)
+            if self.use_transient_branch
+            else zero
+        )
+
+        signal = harmonic + noise + transient
+        if self.use_reverb:
+            signal = self.reverb(signal)
+
+        self.last_branch_outputs = {
+            "transient": transient,
+            "sustain": harmonic,
+            "noise": noise,
+            "signal": signal,
+        }
+        return signal
+
     def forward(self, pitch, loudness, pluck=None, expression=None,
-                onset=None, offset=None):
+                onset=None, offset=None, articulation=None, gate=None,
+                note_age=None, note_progress=None):
+        if self.use_bass_v2:
+            return self._forward_bass_v2(
+                pitch,
+                loudness,
+                articulation if articulation is not None else pluck,
+                onset,
+                offset,
+                gate,
+                note_age,
+                note_progress,
+                realtime=False,
+            )
+
         hidden = self._decoder_hidden(
             pitch,
             loudness,
@@ -327,10 +667,11 @@ class DDSP(nn.Module):
         param = scale_function(self.proj_matrices[1](hidden) - 5)
 
         impulse = amp_to_impulse_response(param, self.block_size)
+        block_size = int(self.block_size.detach().cpu().item())
         noise = torch.rand(
             impulse.shape[0],
             impulse.shape[1],
-            self.block_size,
+            block_size,
         ).to(impulse) * 2 - 1
 
         noise = fft_convolve(noise, impulse).contiguous()
@@ -339,12 +680,34 @@ class DDSP(nn.Module):
         signal = harmonic + noise
 
         #reverb part
-        signal = self.reverb(signal)
+        if self.use_reverb:
+            signal = self.reverb(signal)
+
+        self.last_branch_outputs = {
+            "transient": torch.zeros_like(harmonic),
+            "sustain": harmonic,
+            "noise": noise,
+            "signal": signal,
+        }
 
         return signal
 
     def realtime_forward(self, pitch, loudness, pluck=None, expression=None,
-                         onset=None, offset=None):
+                         onset=None, offset=None, articulation=None, gate=None,
+                         note_age=None, note_progress=None):
+        if self.use_bass_v2:
+            return self._forward_bass_v2(
+                pitch,
+                loudness,
+                articulation if articulation is not None else pluck,
+                onset,
+                offset,
+                gate,
+                note_age,
+                note_progress,
+                realtime=True,
+            )
+
         hidden = self._decoder_hidden(
             pitch,
             loudness,
@@ -386,10 +749,11 @@ class DDSP(nn.Module):
         param = scale_function(self.proj_matrices[1](hidden) - 5)
 
         impulse = amp_to_impulse_response(param, self.block_size)
+        block_size = int(self.block_size.detach().cpu().item())
         noise = torch.rand(
             impulse.shape[0],
             impulse.shape[1],
-            self.block_size,
+            block_size,
         ).to(impulse) * 2 - 1
 
         noise = fft_convolve(noise, impulse).contiguous()
