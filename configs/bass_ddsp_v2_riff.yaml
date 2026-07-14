@@ -1,22 +1,19 @@
 data:
-  dataset: idmt_bass_note
+  dataset: idmt_bass_riff
   data_location: /disk1/ahnjiho/IDMT-SMT-BASS
   extension: "wav"
 
 preprocess:
   sampling_rate: &samplingrate 16000
-  signal_length: &signallength 32000
+  signal_length: &signallength 32768
   block_size: &blocksize 256
 
-  oneshot: false
-  out_dir: ./preprocessed/
-
 idmt_bass:
-  examples_per_epoch: 512
-  min_note_seconds: 0.35
-  max_note_seconds: 1.35
-  min_crossfade_seconds: 0.040
-  max_crossfade_seconds: 0.090
+  examples_per_epoch: 1024
+  min_note_seconds: 0.28
+  max_note_seconds: 1.10
+  min_crossfade_seconds: 0.030
+  max_crossfade_seconds: 0.075
   trim_top_db: 35.0
   trim_onset_top_db: 25.0
   trim_noise_percentile: 20.0
@@ -30,7 +27,7 @@ idmt_bass:
   include_expression_styles: ["NO", "DN", "HA"]
   include_string_numbers: [1, 2, 3, 4]
   deduplicate: true
-  cache_size: 512
+  cache_size: 768
   pitch_source: labels
   pitch_fmin: 30.0
   pitch_fmax: 330.0
@@ -41,13 +38,12 @@ idmt_bass:
   seed:
 
 model:
-  architecture: bass_ddsp_v2
-  recurrent_type: mamba
   hidden_size: 256
   n_harmonic: 100
   n_bands: 65
   sampling_rate: *samplingrate
   block_size: *blocksize
+  recurrent_type: mamba
   mamba_d_state: 16
   mamba_d_conv: 4
   mamba_expand: 2
@@ -66,14 +62,21 @@ model:
   use_reverb: false
   transient_seconds: 0.20
 
+  # Explicit branch gain staging before summing.
+  # These are fixed by default so the model cannot immediately undo them.
+  sustain_gain_db: 0.0
+  noise_gain_db: 6.0
+  transient_gain_db: 18.0
+  learnable_branch_gains: false
+
 train:
   scales: [4096, 2048, 1024, 512, 256, 128]
   overlap: .75
   loudness_stats_batches: 8
   num_workers: 0
   grad_clip_norm: 1.0
-  rms_loss_weight: 1.0
-  onset_loss_weight: 0.35
+  rms_loss_weight: 1.2
+  onset_loss_weight: 0.45
   onset_loss_seconds: 0.15
-  transient_loss_weight: 2.0
+  transient_loss_weight: 2.5
   eval_every_epochs: 1

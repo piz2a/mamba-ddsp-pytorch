@@ -182,7 +182,10 @@ class DDSP(nn.Module):
                  use_note_shape_controls=False,
                  use_transient_branch=False, use_sustain_branch=True,
                  use_noise_branch=True, use_reverb=True,
-                 transient_seconds=0.20):
+                 transient_seconds=0.20, scale_f0_input=False,
+                 f0_min_hz=30.0, f0_max_hz=330.0,
+                 pitch_hidden_size=None, loudness_hidden_size=None,
+                 z_hidden_size=None):
         super().__init__()
         self.register_buffer("sampling_rate", torch.tensor(sampling_rate))
         self.register_buffer("block_size", torch.tensor(block_size))
@@ -212,6 +215,13 @@ class DDSP(nn.Module):
         self.use_noise_branch = bool(use_noise_branch)
         self.use_reverb = bool(use_reverb)
         self.transient_seconds = float(transient_seconds)
+        self.scale_f0_input = bool(scale_f0_input)
+        f0_min_hz = max(float(f0_min_hz), 1e-6)
+        f0_max_hz = max(float(f0_max_hz), f0_min_hz + 1e-6)
+        f0_min_midi = 69.0 + 12.0 * math.log2(f0_min_hz / 440.0)
+        f0_max_midi = 69.0 + 12.0 * math.log2(f0_max_hz / 440.0)
+        self.register_buffer("f0_min_midi", torch.tensor(f0_min_midi))
+        self.register_buffer("f0_max_midi", torch.tensor(f0_max_midi))
         self.z_size = z_size if (self.use_style or self.use_articulation) else 0
 
         if self.use_style:
@@ -245,20 +255,28 @@ class DDSP(nn.Module):
             self.n_articulation_controls = 0
             self.articulation_encoder = None
 
-        input_sizes = [1, 1]
+        branch_input_sizes = [1, 1]
+        branch_hidden_sizes = [
+            int(pitch_hidden_size or hidden_size),
+            int(loudness_hidden_size or hidden_size),
+        ]
         if self.z_size:
-            input_sizes.append(z_size)
+            branch_input_sizes.append(z_size)
+            branch_hidden_sizes.append(int(z_hidden_size or hidden_size))
         self.in_mlps = nn.ModuleList([
-            mlp(input_size, hidden_size, 3)
-            for input_size in input_sizes
+            mlp(input_size, branch_hidden_size, 3)
+            for input_size, branch_hidden_size in zip(
+                branch_input_sizes,
+                branch_hidden_sizes,
+            )
         ])
-        n_condition_inputs = len(input_sizes)
+        condition_size = sum(branch_hidden_sizes)
         if recurrent_type == "gru":
-            self.gru = gru(n_condition_inputs, hidden_size)
+            self.gru = nn.GRU(condition_size, hidden_size, batch_first=True)
             self.recurrent = self.gru
         elif recurrent_type == "mamba":
             self.recurrent = MambaRecurrent(
-                n_condition_inputs * hidden_size,
+                condition_size,
                 hidden_size,
                 d_state=mamba_d_state,
                 d_conv=mamba_d_conv,
@@ -295,6 +313,14 @@ class DDSP(nn.Module):
         if recurrent_type == "gru":
             self.register_buffer("cache_gru", torch.zeros(1, 1, hidden_size))
         self.register_buffer("phase", torch.zeros(1))
+
+    def _pitch_for_network(self, pitch):
+        if not self.scale_f0_input:
+            return pitch
+        pitch = pitch.clamp_min(1e-6)
+        midi = 69.0 + 12.0 * torch.log2(pitch / 440.0)
+        denom = (self.f0_max_midi - self.f0_min_midi).clamp_min(1e-6)
+        return ((midi - self.f0_min_midi) / denom).clamp(0.0, 1.0)
 
     def _run_recurrent(self, hidden):
         if self.recurrent_type == "gru":
@@ -404,8 +430,9 @@ class DDSP(nn.Module):
     def _decoder_hidden(self, pitch, loudness, pluck, expression, onset,
                         offset, realtime):
         z = self._encode_style(pitch, pluck, expression, onset, offset)
+        pitch_control = self._pitch_for_network(pitch)
         inputs = [
-            self.in_mlps[0](pitch),
+            self.in_mlps[0](pitch_control),
             self.in_mlps[1](loudness),
         ]
         if z is not None:
@@ -418,7 +445,7 @@ class DDSP(nn.Module):
             else self._run_recurrent(hidden)
         )
 
-        outputs = [recurrent, pitch, loudness]
+        outputs = [recurrent, pitch_control, loudness]
         if z is not None:
             outputs.append(z)
         return self.out_mlp(torch.cat(outputs, -1))
@@ -444,8 +471,9 @@ class DDSP(nn.Module):
             note_age,
             note_progress,
         )
+        pitch_control = self._pitch_for_network(pitch)
         inputs = [
-            self.in_mlps[0](pitch),
+            self.in_mlps[0](pitch_control),
             self.in_mlps[1](loudness),
         ]
         if z is not None:
@@ -458,7 +486,7 @@ class DDSP(nn.Module):
             else self._run_recurrent(hidden)
         )
 
-        outputs = [recurrent, pitch, loudness]
+        outputs = [recurrent, pitch_control, loudness]
         if z is not None:
             outputs.append(z)
         return self.out_mlp(torch.cat(outputs, -1))

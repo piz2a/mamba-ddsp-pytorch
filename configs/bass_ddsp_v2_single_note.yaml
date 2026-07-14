@@ -8,9 +8,6 @@ preprocess:
   signal_length: &signallength 32000
   block_size: &blocksize 256
 
-  oneshot: false
-  out_dir: ./preprocessed/
-
 idmt_bass:
   examples_per_epoch: 512
   min_note_seconds: 0.35
@@ -41,13 +38,12 @@ idmt_bass:
   seed:
 
 model:
-  architecture: bass_ddsp_v2
-  recurrent_type: mamba
   hidden_size: 256
   n_harmonic: 100
   n_bands: 65
   sampling_rate: *samplingrate
   block_size: *blocksize
+  recurrent_type: mamba
   mamba_d_state: 16
   mamba_d_conv: 4
   mamba_expand: 2
@@ -65,6 +61,10 @@ model:
   use_noise_branch: true
   use_reverb: false
   transient_seconds: 0.20
+  sustain_gain_db: 0.0
+  noise_gain_db: 6.0
+  transient_gain_db: 18.0
+  learnable_branch_gains: false
 
 train:
   scales: [4096, 2048, 1024, 512, 256, 128]
