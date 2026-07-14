@@ -6,6 +6,7 @@ from effortless_config import Config
 from os import listdir, makedirs, path
 import itertools
 import csv
+import os
 from idmt_bass import IDMTBassNoteDataset, IDMTBassRiffDataset
 from preprocess import Dataset as PreprocessedDataset
 from tqdm import tqdm
@@ -91,6 +92,14 @@ class args(Config):
     DECAY_OVER = 400000
     DEVICE = None
     OVERWRITE = False
+    WANDB = False
+    WANDB_PROJECT = "bass-ddsp"
+    WANDB_ENTITY = ""
+    WANDB_MODE = "online"
+    WANDB_TAGS = ""
+    WANDB_NOTES = ""
+    WANDB_RESUME = "allow"
+    WANDB_LOG_MODEL = False
 
 
 args.parse_args()
@@ -186,6 +195,57 @@ if path.isdir(run_dir) and listdir(run_dir) and not args.OVERWRITE:
     )
 makedirs(run_dir, exist_ok=True)
 writer = SummaryWriter(run_dir, flush_secs=20)
+wandb_run = None
+wandb = None
+if args.WANDB:
+    try:
+        import wandb as wandb_module
+    except ImportError as exc:
+        raise ImportError(
+            "W&B logging requested with --wandb true, but wandb is not "
+            "installed. Install it with `python -m pip install wandb`."
+        ) from exc
+
+    wandb = wandb_module
+    wandb_run_id_path = path.join(run_dir, "wandb_run_id.txt")
+    wandb_run_id = os.environ.get("WANDB_RUN_ID")
+    if not wandb_run_id and path.exists(wandb_run_id_path):
+        with open(wandb_run_id_path, "r") as run_id_file:
+            wandb_run_id = run_id_file.read().strip() or None
+
+    wandb_tags = [
+        tag.strip()
+        for tag in str(args.WANDB_TAGS).split(",")
+        if tag.strip()
+    ]
+    wandb_config = {
+        "config": config,
+        "cli": {
+            "name": args.NAME,
+            "root": args.ROOT,
+            "steps": args.STEPS,
+            "batch": args.BATCH,
+            "start_lr": args.START_LR,
+            "stop_lr": args.STOP_LR,
+            "decay_over": args.DECAY_OVER,
+            "device": str(device),
+        },
+    }
+    wandb_run = wandb.init(
+        project=args.WANDB_PROJECT,
+        entity=args.WANDB_ENTITY or None,
+        mode=args.WANDB_MODE,
+        dir=run_dir,
+        name=args.NAME,
+        id=wandb_run_id,
+        resume=args.WANDB_RESUME,
+        tags=wandb_tags,
+        notes=args.WANDB_NOTES or None,
+        config=wandb_config,
+    )
+    with open(wandb_run_id_path, "w") as run_id_file:
+        run_id_file.write(wandb_run.id)
+
 loss_csv_path = path.join(run_dir, "loss.csv")
 loss_csv = open(loss_csv_path, "w", newline="")
 loss_writer = csv.writer(loss_csv)
@@ -371,6 +431,23 @@ for e in tqdm(range(epochs)):
         writer.add_scalar("transient_branch_rms", transient_branch_rms.item(), step)
         writer.add_scalar("sustain_branch_rms", sustain_branch_rms.item(), step)
         writer.add_scalar("noise_branch_rms", noise_branch_rms.item(), step)
+
+        metrics = {
+            "train/loss": loss.item(),
+            "train/spectral_loss": spectral_loss.item(),
+            "train/rms_loss": rms_loss.item(),
+            "train/onset_spectral_loss": onset_spectral_loss.item(),
+            "train/transient_loss": transient_loss.item(),
+            "train/target_rms": target_rms.item(),
+            "train/reconstruction_rms": reconstruction_rms.item(),
+            "train/transient_branch_rms": transient_branch_rms.item(),
+            "train/sustain_branch_rms": sustain_branch_rms.item(),
+            "train/noise_branch_rms": noise_branch_rms.item(),
+            "train/lr": schedule(step),
+        }
+        if wandb_run is not None:
+            wandb.log(metrics, step=step)
+
         loss_writer.writerow([
             step,
             loss.item(),
@@ -403,10 +480,22 @@ for e in tqdm(range(epochs)):
         # scheduler.step()
         if mean_loss < best_loss:
             best_loss = mean_loss
+            state_path = path.join(run_dir, "state.pth")
             torch.save(
                 model.state_dict(),
-                path.join(run_dir, "state.pth"),
+                state_path,
             )
+            if wandb_run is not None and args.WANDB_LOG_MODEL:
+                artifact = wandb.Artifact(
+                    f"{args.NAME}-best-state",
+                    type="model",
+                    metadata={"step": step, "epoch": e, "mean_loss": mean_loss},
+                )
+                artifact.add_file(state_path)
+                wandb_run.log_artifact(
+                    artifact,
+                    aliases=["best", f"step-{step}", f"epoch-{e}"],
+                )
 
         mean_loss = 0
         n_element = 0
@@ -418,8 +507,24 @@ for e in tqdm(range(epochs)):
             audio,
             config["preprocess"]["sampling_rate"],
         )
+        if wandb_run is not None:
+            wandb.log(
+                {
+                    "eval/epoch": e,
+                    "eval/best_loss": best_loss,
+                    "eval/reconstruction_audio": wandb.Audio(
+                        audio,
+                        sample_rate=config["preprocess"]["sampling_rate"],
+                        caption="target followed by reconstruction",
+                    ),
+                },
+                step=step,
+            )
 
     if should_finish:
         break
 
 loss_csv.close()
+writer.close()
+if wandb_run is not None:
+    wandb.finish()

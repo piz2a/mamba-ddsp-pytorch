@@ -68,6 +68,16 @@ python train.py --config config_idmt_bass_v2_single_note.yaml --name idmt_bass_v
 python visualize_ddsp_run.py --run runs/idmt_bass_v2_single_note_001 --out-dir runs/idmt_bass_v2_single_note_001/visuals --seed 4321 --pitch-source labels
 ```
 
+Optional W&B logging:
+
+```bash
+python train.py --config config_idmt_bass_v2_single_note.yaml --name idmt_bass_v2_single_note_wandb_001 --steps 10000 --batch 4 --wandb true --wandb-project bass-ddsp --wandb-tags idmt,bass-ddsp-v2,single-note
+```
+
+For long-running jobs, use `tmux` so the process survives terminal or VS Code
+disconnects while the Docker container keeps running. See
+`/workspace/WANDB_TMUX_GUIDE.md`.
+
 Once trained, export it using
 
 ```bash
