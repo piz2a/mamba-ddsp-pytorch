@@ -1,5 +1,5 @@
 # Scat-to-Bass: DDSP-Based, Transient-Assisted Bass Synthesizer from Scat Recordings
-is a sequantial model (Scat-to-bass classifier + Bass-DDSP).
+is a sequantial model (Scat-to-bass encoder + Bass-DDSP).
 
 Currently working on Bass-DDSP Part.
 
@@ -7,7 +7,7 @@ Currently working on Bass-DDSP Part.
 
 Bass-DDSP is a bass-specific synthesis path for IDMT-SMT-BASS. The goal is
 to solve the smooth, violin-like behavior of the baseline DDSP model before
-connecting the later scat-to-bass classifier.
+connecting the later scat-to-bass encoder.
 
 The model is trained first on isolated labeled notes, then on generated riffs.
 It uses observed IDMT articulation classes such as `FS_NO`, `PK_NO`, `SP_NO`,
