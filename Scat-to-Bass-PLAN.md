@@ -1,24 +1,44 @@
 # Scat-to-Bass: DDSP-Based, Transient-Assisted Bass Synthesizer from Scat Recordings
+is a sequantial model (Scat-to-bass classifier + Bass-DDSP).
+
+Currently working on Bass-DDSP Part.
 
 ## Summary
 
-Bass-DDSP v2 is a bass-specific synthesis path for IDMT-SMT-BASS. The goal is
+Bass-DDSP is a bass-specific synthesis path for IDMT-SMT-BASS. The goal is
 to solve the smooth, violin-like behavior of the baseline DDSP model before
 connecting the later scat-to-bass classifier.
 
 The model is trained first on isolated labeled notes, then on generated riffs.
 It uses observed IDMT articulation classes such as `FS_NO`, `PK_NO`, `SP_NO`,
-and `FS_HA` instead of assuming plucking style and expression style are fully
-independent.
+and `FS_HA` instead of assuming plucking style and expression style are fully independent.
 
 ## Architecture
 
 Frame-level controls:
 
-- `f0(t)` from labels by default.
-- deterministic `loudness(t)`.
-- observed `articulation_id(t)`.
-- `gate(t)`, `onset(t)`, `offset(t)`, `note_age(t)`, and `note_progress(t)`.
+- `gate(t)`: $\{0,1\}^{(B,T,1)} := $ `(f0(t) > 0).float()`
+* Category A
+  + When training Bass-DDSP: Extracted from bass audio
+  + When training scat-to-bass classifier: Extracted from vocal audio
+  - `f0(t)`: $[0,1]^{(B,T,1)}$: converted log-scale from $[28Hz, 330Hz]$ (comprehensive) (original IDMT dataset: $[35Hz, 240Hz]$)
+  - deterministic `loudness(t)`: z-score normalized $\mathbb{R}^{(B,T,1)}$.'
+
+* Category B:
+  + When training Bass-DDSP: Extracted from bass dataset
+  + When training scat-to-bass classifier: Predicted with vocal encoder
+
+  - observed `articulation_id(t)` (8 categories: `FS_NO`, `MU_NO`, `PK_NO`, `SP_NO`, `ST_NO`, `FS_NO`, `FS_HA`, `FS_DN`. BE, SL, VI are excluded since they are assumed to be fully controlled by `f0(t)`.) Not used directly. Further embedded to `articulation_emb(t)`: $\mathbb{R}^{(B,T,d_{art})}$ where $d_{art}=$
+  - `string_id(t)`: 4 categories: $\{1, 2, 3, 4\}^{(B,T)}$. Not used directly. Further embedded to `string_emb(t)`: $\mathbb{R}^{(B,T,d_{str})}$ where $d_{str}=$
+  - `onset(t)`, `offset(t)`: $\{0,1\}^{(B,T,1)}$
+  - `note_age(t)`: $[0, t_{max}]^{(B,T,1)}$ where $t_{max}$ denotes the maximum number of single-note samples observed in the dataset (should find the exact constant value)
+
+* Category C:
+  + When training Bass-DDSP: Extracted from bass audio
+  + When training scat-to-bass classifier: Predicted with vocal encoder
+  - `periodicity(t)`: $[0,1]^{(B,T,1)}$ confidence of `f0`
+  - `centroid(t)`: $[0,1)^{(B,T,1)}$: spectral centroid of each time frame. scaled same as `f0(t)`.
+
 
 Synthesis branches:
 
