@@ -194,7 +194,7 @@ class BassDDSPV2(nn.Module):
         self.register_buffer("f0_min_midi", torch.tensor(f0_min_midi))
         self.register_buffer("f0_max_midi", torch.tensor(f0_max_midi))
 
-        self.n_articulation_controls = 5 if self.use_note_shape_controls else 2
+        self.n_articulation_controls = 4 if self.use_note_shape_controls else 2
         self.articulation_encoder = ArticulationEncoder(
             n_articulation=n_articulation,
             embedding_size=articulation_embedding_size,
@@ -326,7 +326,6 @@ class BassDDSPV2(nn.Module):
         offset,
         gate,
         note_age,
-        note_progress,
     ):
         shape = pitch.shape[:2]
         if articulation is None:
@@ -342,7 +341,6 @@ class BassDDSPV2(nn.Module):
             controls.extend([
                 self._frame_control(gate, pitch, 1.0),
                 self._frame_control(note_age, pitch, 0.0),
-                self._frame_control(note_progress, pitch, 0.0),
             ])
         return self.articulation_encoder(
             articulation.to(pitch.device),
@@ -358,7 +356,6 @@ class BassDDSPV2(nn.Module):
         offset,
         gate,
         note_age,
-        note_progress,
         realtime,
     ):
         z = self._encode_articulation(
@@ -368,7 +365,6 @@ class BassDDSPV2(nn.Module):
             offset,
             gate,
             note_age,
-            note_progress,
         )
         pitch_control = self._pitch_for_network(pitch)
         hidden = torch.cat([
@@ -486,12 +482,10 @@ class BassDDSPV2(nn.Module):
         offset=None,
         gate=None,
         note_age=None,
-        note_progress=None,
         realtime=False,
     ):
         gate = self._frame_control(gate, pitch, 1.0)
         note_age = self._frame_control(note_age, pitch, 0.0)
-        note_progress = self._frame_control(note_progress, pitch, 0.0)
         hidden = self._decoder_hidden(
             pitch,
             loudness,
@@ -500,7 +494,6 @@ class BassDDSPV2(nn.Module):
             offset,
             gate,
             note_age,
-            note_progress,
             realtime,
         )
 
@@ -557,7 +550,6 @@ class BassDDSPV2(nn.Module):
         offset=None,
         gate=None,
         note_age=None,
-        note_progress=None,
     ):
         return self._forward_impl(
             pitch,
@@ -567,7 +559,6 @@ class BassDDSPV2(nn.Module):
             offset=offset,
             gate=gate,
             note_age=note_age,
-            note_progress=note_progress,
             realtime=False,
         )
 
@@ -580,7 +571,6 @@ class BassDDSPV2(nn.Module):
         offset=None,
         gate=None,
         note_age=None,
-        note_progress=None,
     ):
         return self._forward_impl(
             pitch,
@@ -590,6 +580,5 @@ class BassDDSPV2(nn.Module):
             offset=offset,
             gate=gate,
             note_age=note_age,
-            note_progress=note_progress,
             realtime=True,
         )

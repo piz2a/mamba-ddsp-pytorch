@@ -123,10 +123,10 @@ def set_lr(opt, start_lr, stop_lr, decay_over, step):
 
 
 def unpack_batch(batch, device):
-    if len(batch) != 9:
+    if len(batch) != 8:
         raise ValueError(
-            "BassDDSPV2 expects 9 tensors: audio, pitch, loudness, articulation, "
-            f"onset, offset, gate, note_age, note_progress. Got {len(batch)}."
+            "BassDDSPV2 expects 8 tensors: audio, pitch, loudness, articulation, "
+            f"onset, offset, gate, note_age. Got {len(batch)}."
         )
     (
         audio,
@@ -137,7 +137,6 @@ def unpack_batch(batch, device):
         offset,
         gate,
         note_age,
-        note_progress,
     ) = batch
     return {
         "audio": audio.to(device),
@@ -148,7 +147,6 @@ def unpack_batch(batch, device):
         "offset": offset.unsqueeze(-1).to(device),
         "gate": gate.unsqueeze(-1).to(device),
         "note_age": note_age.unsqueeze(-1).to(device),
-        "note_progress": note_progress.unsqueeze(-1).to(device),
     }
 
 
@@ -249,7 +247,6 @@ def main():
                 offset=batch["offset"],
                 gate=batch["gate"],
                 note_age=batch["note_age"],
-                note_progress=batch["note_progress"],
             ).squeeze(-1)
             target = batch["audio"]
 

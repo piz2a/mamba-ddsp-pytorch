@@ -103,10 +103,10 @@ This excludes F0-dependent subclasses such as bend, slide, and vibrato subclasse
 
 ## Input Tensor Contract
 
-For `bass_ddsp_v2`, the training batch contains 9 tensors:
+For `bass_ddsp_v2`, the training batch contains 8 tensors:
 
 ```text
-audio, pitch, loudness, articulation, onset, offset, gate, note_age, note_progress
+audio, pitch, loudness, articulation, onset, offset, gate, note_age
 ```
 
 After the training loop reshapes them:
@@ -121,7 +121,8 @@ After the training loop reshapes them:
 | `offset` | `(B, T, 1)` | Soft offset pulse |
 | `gate` | `(B, T, 1)` | Active note mask |
 | `note_age` | `(B, T, 1)` | Seconds since current note start, clipped |
-| `note_progress` | `(B, T, 1)` | Fractional progress through current interval |
+
+`note_progress` is intentionally excluded. It requires knowing the interval end time before the current frame, so it is not a causal real-time control. Bass-string sound can depend on elapsed time since note start, but it cannot depend on future note-off time during real-time inference.
 
 For riff training:
 
@@ -171,10 +172,10 @@ Input:
 articulation_id(t) + control vector(t)
 ```
 
-The control vector has 5 channels when `use_note_shape_controls: true`:
+The control vector has 4 channels when `use_note_shape_controls: true`:
 
 ```text
-[onset, offset, gate, note_age, note_progress]
+[onset, offset, gate, note_age]
 ```
 
 The encoder path is:
@@ -183,7 +184,7 @@ The encoder path is:
 articulation_id
   -> embedding, 24 dims
 
-[embedding, onset, offset, gate, note_age, note_progress]
+[embedding, onset, offset, gate, note_age]
   -> MLP, hidden 256
   -> Linear to z_size 64
   -> LayerNorm
@@ -636,15 +637,16 @@ Current width:
 event_width_seconds: 0.032
 ```
 
-### Gate, Note Age, Note Progress
+### Gate and Note Age
 
 For each non-overlapping labeled interval:
 
 ```text
 gate = 1 inside interval, 0 outside
 note_age = seconds since interval start, clipped to note_age_clip_seconds
-note_progress = (current_frame - start) / interval_duration
 ```
+
+`note_progress` is not generated or emitted, because it would require knowing the future note end.
 
 Current clip:
 
@@ -785,7 +787,7 @@ The next changes should be architectural or loss-level, not just longer training
 
 ```text
 Per-frame controls:
-  pitch_hz, loudness, articulation_id, onset, offset, gate, note_age, note_progress
+  pitch_hz, loudness, articulation_id, onset, offset, gate, note_age
 
 Pitch path:
   pitch_hz
@@ -799,7 +801,7 @@ Loudness path:
 
 Articulation path:
   articulation_id -> embedding, 24 dims
-  [embedding, onset, offset, gate, note_age, note_progress]
+  [embedding, onset, offset, gate, note_age]
     -> ArticulationEncoder
     -> z(t), 64 dims
     -> z MLP, 256 dims

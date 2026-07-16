@@ -64,7 +64,6 @@ def reconstruct(model, config, data, device):
         "offset": torch.from_numpy(data["offset"]).float().unsqueeze(0).unsqueeze(-1).to(device),
         "gate": torch.from_numpy(data["gate"]).float().unsqueeze(0).unsqueeze(-1).to(device),
         "note_age": torch.from_numpy(data["note_age"]).float().unsqueeze(0).unsqueeze(-1).to(device),
-        "note_progress": torch.from_numpy(data["note_progress"]).float().unsqueeze(0).unsqueeze(-1).to(device),
     }
     with torch.no_grad():
         signal = model(pitch, loudness, **kwargs)

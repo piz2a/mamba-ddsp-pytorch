@@ -503,13 +503,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         )
         gate = np.zeros(self.frames, dtype=np.float32)
         note_age = np.zeros(self.frames, dtype=np.float32)
-        note_progress = np.zeros(self.frames, dtype=np.float32)
 
         clip_seconds = self.note_age_clip_seconds
         for interval in intervals:
             start = float(interval["start_sample"])
             end = float(interval["end_sample"])
-            duration = max(1.0, end - start)
             active = (frame_positions >= start) & (frame_positions < end)
             if not np.any(active):
                 continue
@@ -517,13 +515,8 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             age_seconds = (frame_positions[active] - start) / self.sampling_rate
             gate[active] = 1.0
             note_age[active] = np.minimum(age_seconds, clip_seconds)
-            note_progress[active] = np.clip(
-                (frame_positions[active] - start) / duration,
-                0.0,
-                1.0,
-            )
 
-        return gate, note_age, note_progress
+        return gate, note_age
 
     def _pitch_track(self, audio, label_pitch):
         if self.pitch_source == "labels":
@@ -553,7 +546,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         offset,
         gate,
         note_age,
-        note_progress,
     ):
         if self.label_mode == "observed_articulation":
             if self.use_note_shape_controls:
@@ -566,7 +558,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
                     torch.from_numpy(offset),
                     torch.from_numpy(gate),
                     torch.from_numpy(note_age),
-                    torch.from_numpy(note_progress),
                 )
             return (
                 torch.from_numpy(audio),
@@ -604,7 +595,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         intervals = self._intervals(events)
         pluck, expression, articulation, label_pitch = self._label_tracks(events)
         onset, offset = self._note_event_tracks(intervals)
-        gate, note_age, note_progress = self._note_shape_tracks(intervals)
+        gate, note_age = self._note_shape_tracks(intervals)
         return (
             audio,
             pluck,
@@ -615,7 +606,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             offset,
             gate,
             note_age,
-            note_progress,
             intervals,
         )
 
@@ -631,7 +621,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             offset,
             gate,
             note_age,
-            note_progress,
             _,
         ) = self._riff(rng)
 
@@ -653,7 +642,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             offset,
             gate,
             note_age,
-            note_progress,
         )
 
     def generate_debug_example(self, idx=0, pitch_source=None):
@@ -668,7 +656,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             offset,
             gate,
             note_age,
-            note_progress,
             intervals,
         ) = self._riff(rng)
         loudness = extract_loudness(
@@ -706,7 +693,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             "offset": offset,
             "gate": gate,
             "note_age": note_age,
-            "note_progress": note_progress,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),
@@ -766,7 +752,7 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
         )
         label_pitch = np.full(self.frames, note.frequency, dtype=np.float32)
         onset, offset = self._note_event_tracks(intervals)
-        gate, note_age, note_progress = self._note_shape_tracks(intervals)
+        gate, note_age = self._note_shape_tracks(intervals)
         return (
             audio,
             pluck,
@@ -777,7 +763,6 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             offset,
             gate,
             note_age,
-            note_progress,
             intervals,
         )
 
@@ -793,7 +778,6 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             offset,
             gate,
             note_age,
-            note_progress,
             _,
         ) = self._single_note(rng)
 
@@ -815,7 +799,6 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             offset,
             gate,
             note_age,
-            note_progress,
         )
 
     def generate_debug_example(self, idx=0, pitch_source=None):
@@ -830,7 +813,6 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             offset,
             gate,
             note_age,
-            note_progress,
             intervals,
         ) = self._single_note(rng)
         loudness = extract_loudness(
@@ -859,7 +841,6 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             "offset": offset,
             "gate": gate,
             "note_age": note_age,
-            "note_progress": note_progress,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),

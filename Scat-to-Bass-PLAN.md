@@ -28,7 +28,7 @@ Frame-level controls:
   + When training Bass-DDSP: Extracted from bass dataset
   + When training scat-to-bass classifier: Predicted with vocal encoder
 
-  - observed `articulation_id(t)` (8 categories: `FS_NO`, `MU_NO`, `PK_NO`, `SP_NO`, `ST_NO`, `FS_NO`, `FS_HA`, `FS_DN`. BE, SL, VI are excluded since they are assumed to be fully controlled by `f0(t)`.) Not used directly. Further embedded to `articulation_emb(t)`: $\mathbb{R}^{(B,T,d_{art})}$ where $d_{art}=$
+  - observed `articulation_id(t)` (7 categories: `FS_NO`, `MU_NO`, `PK_NO`, `SP_NO`, `ST_NO`, `FS_HA`, `FS_DN`. BE, SL, VI are excluded since they are assumed to be fully controlled by `f0(t)`.) Not used directly. Further embedded to `articulation_emb(t)`: $\mathbb{R}^{(B,T,d_{art})}$ where $d_{art}=$
   - `string_id(t)`: 4 categories: $\{1, 2, 3, 4\}^{(B,T)}$. Not used directly. Further embedded to `string_emb(t)`: $\mathbb{R}^{(B,T,d_{str})}$ where $d_{str}=$
   - `onset(t)`, `offset(t)`: $\{0,1\}^{(B,T,1)}$
   - `note_age(t)`: $[0, t_{max}]^{(B,T,1)}$ where $t_{max}$ denotes the maximum number of single-note samples observed in the dataset (should find the exact constant value)
