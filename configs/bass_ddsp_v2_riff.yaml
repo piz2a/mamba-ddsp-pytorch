@@ -24,6 +24,13 @@ idmt_bass:
   edge_fade_seconds: 0.004
   release_fade_seconds: 0.035
   event_width_seconds: 0.032
+  hpss_margin: 8.0
+  periodicity_use_crepe_confidence: true
+  periodicity_crepe_model: tiny
+  periodicity_crepe_device: cpu
+  periodicity_crepe_mix: 0.35
+  periodicity_mu_prior: 0.25
+  periodicity_dn_prior: 0.45
   include_expression_styles: ["NO", "DN", "HA"]
   include_string_numbers: [1, 2, 3, 4]
   deduplicate: true
@@ -43,7 +50,7 @@ model:
   n_bands: 65
   sampling_rate: *samplingrate
   block_size: *blocksize
-  recurrent_type: mamba
+  recurrent_type: gru
   mamba_d_state: 16
   mamba_d_conv: 4
   mamba_expand: 2
@@ -60,6 +67,20 @@ model:
   use_sustain_branch: true
   use_noise_branch: true
   use_reverb: false
+  n_wavetables: 16
+  wavetable_length: 512
+  wavetable_init_std: 0.01
+  sustain_fade_seconds: 0.006
+  sustain_age_mix_rate: 1.0
+  noise_decay_rate: 10.0
+  transient_decay_rate: 18.0
+  learnable_decay_rates: true
+  harmonic_indicator_a: 10.0
+  harmonic_indicator_b: 0.7
+  harmonic_gate_floor: 0.15
+  loudness_gain_db_per_std: 8.0
+  loudness_gain_min: 0.15
+  loudness_gain_max: 4.0
   transient_seconds: 0.30
   transient_type: dct_bank
   transient_dct_components: 8
@@ -71,15 +92,6 @@ model:
   transient_dct_gain_floor: 0.05
   transient_dct_taper_strength: 0.0
   transient_dct_normalize_coefficients: true
-  use_harmonic_age_modulation: true
-  harmonic_age_hidden_size: 32
-  harmonic_age_modulation_scale: 1.0
-  use_harmonic_age_envelope: true
-  harmonic_age_total_decay_seconds: 1.2
-  harmonic_age_low_decay_seconds: 1.4
-  harmonic_age_high_decay_seconds: 0.35
-  harmonic_age_envelope_floor: 0.05
-
   # Explicit branch gain staging before summing.
   # Keep production configs neutral; use non-zero values only for controlled
   # branch-balance experiments.
@@ -94,10 +106,4 @@ train:
   loudness_stats_batches: 8
   num_workers: 0
   grad_clip_norm: 1.0
-  rms_loss_weight: 1.2
-  onset_loss_weight: 0.45
-  onset_loss_seconds: 0.30
-  transient_loss_weight: 2.5
-  transient_branch_loss_weight: 2.0
-  transient_branch_pretrain_steps: 0
   eval_every_epochs: 1

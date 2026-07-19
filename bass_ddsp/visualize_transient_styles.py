@@ -58,10 +58,11 @@ def synthesize_style_prototypes(model, labels, config, device, pitch_hz, seconds
     pitch = torch.full((batch, frames, 1), float(pitch_hz), device=device)
     loudness = torch.zeros(batch, frames, 1, device=device)
     articulation = torch.arange(batch, device=device).reshape(batch, 1).repeat(1, frames)
-    onset = torch.zeros(batch, frames, 1, device=device)
-    onset[:, 0, 0] = 1.0
+    onset_strength = torch.zeros(batch, frames, 1, device=device)
+    onset_strength[:, 0, 0] = 1.0
     offset = torch.zeros(batch, frames, 1, device=device)
     gate = torch.ones(batch, frames, 1, device=device)
+    periodicity = torch.ones(batch, frames, 1, device=device)
     note_age = (
         torch.arange(frames, device=device, dtype=torch.float32).reshape(1, frames, 1)
         * block_size
@@ -73,10 +74,11 @@ def synthesize_style_prototypes(model, labels, config, device, pitch_hz, seconds
             pitch,
             loudness,
             articulation=articulation,
-            onset=onset,
+            onset_strength=onset_strength,
             offset=offset,
             gate=gate,
             note_age=note_age,
+            periodicity=periodicity,
         )
     transient = (
         model.last_branch_outputs["transient"]

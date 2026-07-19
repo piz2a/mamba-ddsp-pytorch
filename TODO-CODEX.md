@@ -1,19 +1,49 @@
 # Codex's TODO
+
 - [ ] First of all, remove all cloned repositories (ddsp_pytorch, ddsp_pytorch-modified, ddsp-guitar, diff-wave-synth, mamba) from git and add to .gitignore. Make a Codex rule that we are not modifying any of those code in cloned repositories and just reading them for reference. Commit & Push.
-- [ ] Change DDSP recurrent type to GRU from Mamba, following the original implementation.
-- [ ] Replace additive sustain with DWTS-style wavetable sustain. Reference code is at ./diff-wave-synth. (If you need the NSynth dataset, its location is /disk1/kyungsu/nsynth_from_official/)
-- [ ] Keep the transient branch, but treat it as a style + velocity residual, not exact reconstruction. Therefore, enable the transient branch every frame, not only for the first frame right after onset(t) has triggered.
-- [ ] Make loudness deterministic, not merely an input feature. Ensure final energy follows the requested envelope, not blindly forcing the waveform to exactly match target RMS at every frame.
-- [ ] onset(t) is changed to onset_strength(t), and its dimension is same (B, T, 1) but the dtype set of element should be [0, 1], replacing {0, 1}. onset_strength(t) should manipulate 
-- [ ] Remove string_emb(t). We assume the bass guitar having single strings since it is monophonic. I don't see string ID making a big sound difference.
-- [ ] Remove centroid(t) in initial controls. It should exist per-branch later, and should be predicted from other controls.
-- [ ] Use Harmonic Percussive Source Separation (HPSS) (provided by librosa.decompose.hpss(D)) to both measure onset_strength(t) and calculate loss function by branch. Remove the architecture applying HPF to extract only the percussive sound.
-- [ ] Implement periodicity(t). Extract it from both articulation (should be attenuated by MU and DN) and CREPE confidence. MU and DN should enable low periodicity status, and CREPE confidence should adjust the subtle value details. Make sure CREPE only being used here and not for extracting f0(t). f0(t) is deterministically extracted from bass guitar dataset labels, which must be already implemented. The Harmonic Indicator H introduced in DDSP-SFX should be adapted by applying H=1/(1+exp(-a(C-b))) to DWTS-based sustain branch where C is the periodicity. The DDSP-SFX authors said a=10 and b=0.7 fitted well for their dataset, however we should find our own values. I'm thinking the way we apply H is maybe harmonic_gate = h_floor + (1.0 - h_floor) * H, sustain = sustain_raw * harmonic_gate, with maybe h_floor = 0.10 ~ 0.25.
-- [ ] Remove clicks in sustain branch (I guess applying very short fade-in & fade-out would help, but if you have better idea, elaborate and apply)
-- [ ] DDSP originally does not support 'notes.' Therefore we should adapt note_decay(t) = exp(-A * note_age(t)) to replace loudness(t) for most of the cases like noise & transient branch except the sustain branch, in order to keep vocal-driven loudness(t) cover all the bending and sliding cases. (Should A be trainable? Write down on the report later) We make A branch-specific for all branches. Our three branches all comes from a single DDSP decoder, which is conditioned by F0, Z and Loudness. The difference in architecture is only the number of the final dense layer, 3 for each of branches, not 2. transient = transient_raw * gate * onset_strength * decay_transient(note_age), noise = noise_raw * gate * onset_strength * decay_noise(note_age), sustain = sustain_synthesized * gate * loudness_gain(t) We don't apply sustain_age_env(note_age) because loudness(t) could boost in the middle of note plays when we try mimicking bending or slide in scat recordings. Instead, we get sustain_synthesized from sustain_raw with decay_sustain(note_age) adjusting the harmonic distribution (which should attenuate the magnitude high-frequency-first and I don't have specific implementation ideas. Do it and write down in the report after training.)
-- [ ] Simplify the loss function L = L_reg (MSSL of final reconstructed and target audio) for now, removing all the other case-specific loss terms
-- [ ] Test out the model synthesis forbending and sliding cases by keeping the number of notes 1 and manipulating f0(t) going up and down.
-- [ ] Revise ./Scat-to-Bass-PLAN.md file before implementing, then revise ./BASS_DDSP_V2_ARCHITECTURE_REPORT.md file after successfully training the code.
-- [ ] Provide me a single-line script for further longer training and inferencing.
+  - Status: cloned repos are untracked and ignored; `AGENTS.md` states they are read-only references. The current `HEAD` commit exists locally. Push is blocked by missing GitHub credentials in this container.
+- [X] Change DDSP recurrent type to GRU from Mamba, following the original implementation.
+  - Done in `BassDDSPV2` default constructor and active configs.
+- [X] Replace additive sustain with DWTS-style wavetable sustain. Reference code is at ./diff-wave-synth. (If you need the NSynth dataset, its location is /disk1/kyungsu/nsynth_from_official/)
+  - Active forward path now uses learned wavetable lookup + wavetable attention. The stale additive harmonic projection/helper was removed.
+- [X] Keep the transient branch, but treat it as a style + velocity residual, not exact reconstruction. Therefore, enable the transient branch every frame, not only for the first frame right after onset(t) has triggered.
+  - Transient raw output is generated at audio rate from `note_age`; audibility is controlled by continuous `onset_strength` and branch decay.
+- [X] Make loudness deterministic, not merely an input feature. Ensure final energy follows the requested envelope, not blindly forcing the waveform to exactly match target RMS at every frame.
+  - Sustain now receives deterministic `loudness_gain(t)` with bounded dB mapping.
+- [X] onset(t) is changed to onset_strength(t), and its dimension is same `(B, T, 1)` but element values are continuous `[0, 1]`, replacing binary `{0, 1}`.
+  - Dataset, trainer, model, and diagnostics now use `onset_strength`.
+- [X] Remove string_emb(t). We assume the bass guitar having single strings since it is monophonic. I don't see string ID making a big sound difference.
+  - No string embedding/control is used by the first-party model.
+- [X] Remove centroid(t) in initial controls. It should exist per-branch later, and should be predicted from other controls.
+  - No centroid input exists in the active control contract.
+- [X] Use Harmonic Percussive Source Separation (HPSS) (provided by librosa.decompose.hpss(D)) to measure onset_strength(t). Remove the architecture applying HPF to extract only the percussive sound.
+  - HPSS is active for onset strength. HPF transient losses were removed from training.
+  - Note: HPSS branch-specific loss is intentionally not active because the later TODO requested simplified final-audio MSS loss only.
+- [X] Implement periodicity(t). Extract it from both articulation (should be attenuated by MU and DN) and CREPE confidence. MU and DN should enable low periodicity status, and CREPE confidence should adjust the subtle value details. Make sure CREPE only being used here and not for extracting f0(t). f0(t) is deterministically extracted from bass guitar dataset labels, which must be already implemented. The Harmonic Indicator H introduced in DDSP-SFX should be adapted by applying H=1/(1+exp(-a(C-b))) to DWTS-based sustain branch where C is the periodicity. The DDSP-SFX authors said a=10 and b=0.7 fitted well for their dataset, however we should find our own values. I'm thinking the way we apply H is maybe harmonic_gate = h_floor + (1.0 - h_floor) * H, sustain = sustain_raw * harmonic_gate, with maybe h_floor = 0.10 ~ 0.25.
+  - Implemented with defaults `a=10`, `b=0.7`, `h_floor=0.15`; needs later tuning from longer runs.
+- [X] Remove clicks in sustain branch (I guess applying very short fade-in & fade-out would help, but if you have better idea, elaborate and apply)
+  - Added short sustain fade-in (`sustain_fade_seconds: 0.006`). Offset fade remains handled by gate/data fades for now.
+- [X] DDSP originally does not support 'notes.' Therefore we should adapt note_decay(t) = exp(-A * note_age(t)) to replace loudness(t) for most of the cases like noise & transient branch except the sustain branch, in order to keep vocal-driven loudness(t) cover all the bending and sliding cases. (Should A be trainable? Write down on the report later) We make A branch-specific for all branches. Our three branches all comes from a single DDSP decoder, which is conditioned by F0, Z and Loudness. The difference in architecture is only the number of the final dense layer, 3 for each of branches, not 2. transient = transient_raw * gate * onset_strength * decay_transient(note_age), noise = noise_raw * gate * onset_strength * decay_noise(note_age), sustain = sustain_synthesized * gate * loudness_gain(t) We don't apply sustain_age_env(note_age) because loudness(t) could boost in the middle of note plays when we try mimicking bending or slide in scat recordings. Instead, we get sustain_synthesized from sustain_raw with decay_sustain(note_age) adjusting the harmonic distribution (which should attenuate the magnitude high-frequency-first and I don't have specific implementation ideas. Do it and write down in the report after training.)
+  - Done with trainable branch decay rates. Sustain note-age effect is implemented as wavetable-attention mixing toward the initialized fundamental table.
+- [X] Simplify the loss function L = MSSL(final reconstructed audio, target audio) for now, removing all the other case-specific loss terms.
+  - Active train loss is only multi-scale STFT reconstruction.
+- [X] Test out the model synthesis for bending and sliding cases by keeping the number of notes 1 and manipulating f0(t) going up and down.
+  - Added `bass_ddsp/synthesize_bend_slide.py`; smoke outputs are under `runs/bass_ddsp_v2_dwts_100step_20260719_164834/bend_slide_debug`.
+- [X] Revise ./Scat-to-Bass-PLAN.md file before implementing, then revise ./BASS_DDSP_V2_ARCHITECTURE_REPORT.md file after successfully training the code.
+  - Both docs updated. The architecture report includes the current 100-step smoke metrics.
+- [X] Provide me a single-line script for further longer training and inferencing.
+  - Training: `cd /workspace && WANDB=1 DEVICE=cuda:7 ./scripts/train_bass_ddsp_v2_full.sh`
+  - Inference/diagnostics: `cd /workspace && ./scripts/infer_bass_ddsp_v2_debug.sh runs/<run_name> cuda:7`
 - [ ] Start a long training (maximum 10 hours). You should not do it in this session, you can just create a new tmux session and run it independent from you in order to protect my daily/weekly Codex usage. Use wandb for analyzing and tracking in my account even if I access the wandb webpage on other devices.
-- [ ] Evaluate the training & validation results and suggest our next direction.
+  - Blocked: W&B is installed but this container is not logged in (`api_key: null`). Run `wandb login` or set `WANDB_API_KEY`, then run `cd /workspace && SESSION=bass_ddsp_v2_long DEVICE=cuda:7 ./scripts/start_bass_ddsp_v2_long_tmux.sh`.
+- [X] Evaluate the training & validation results and suggest our next direction.
+  - Evaluated smoke/sanity training outputs. There is no real held-out validation split yet, so validation evaluation is a follow-up TODO below.
+
+## Follow-up TODO
+
+- [ ] After W&B login, start the 10-hour tmux run with `./scripts/start_bass_ddsp_v2_long_tmux.sh`.
+- [ ] After GitHub credentials are available, push the current `HEAD` commit with `git push origin master`.
+- [ ] Add a deterministic held-out validation split for IDMT notes/riffs instead of using only smoke-train diagnostics.
+- [ ] Tune `harmonic_indicator_a`, `harmonic_indicator_b`, and `harmonic_gate_floor` from longer run metrics.
+- [ ] Revisit HPSS branch-specific losses after the simplified MSS baseline has a clean W&B run.
+- [ ] Investigate reconstruction loudness after longer training. The 100-step sanity run still has signal/target RMS around `0.11-0.24` on three debug samples.

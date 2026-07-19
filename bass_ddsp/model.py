@@ -8,9 +8,7 @@ import torch.nn as nn
 from ddsp.core import (
     amp_to_impulse_response,
     fft_convolve,
-    harmonic_synth,
     mlp,
-    remove_above_nyquist,
     scale_function,
     upsample,
 )
@@ -151,7 +149,7 @@ class BassDDSPV2(nn.Module):
         articulation_embedding_size=24,
         articulation_hidden_size=None,
         use_note_shape_controls=True,
-        recurrent_type="mamba",
+        recurrent_type="gru",
         mamba_d_state=16,
         mamba_d_conv=4,
         mamba_expand=2,
@@ -159,6 +157,20 @@ class BassDDSPV2(nn.Module):
         use_sustain_branch=True,
         use_noise_branch=True,
         use_reverb=False,
+        n_wavetables=16,
+        wavetable_length=512,
+        wavetable_init_std=0.01,
+        sustain_fade_seconds=0.006,
+        sustain_age_mix_rate=1.0,
+        noise_decay_rate=10.0,
+        transient_decay_rate=18.0,
+        learnable_decay_rates=True,
+        harmonic_indicator_a=10.0,
+        harmonic_indicator_b=0.7,
+        harmonic_gate_floor=0.15,
+        loudness_gain_db_per_std=8.0,
+        loudness_gain_min=0.15,
+        loudness_gain_max=4.0,
         transient_seconds=0.20,
         transient_type="waveform_bank",
         transient_dct_components=8,
@@ -170,14 +182,6 @@ class BassDDSPV2(nn.Module):
         transient_dct_gain_floor=0.05,
         transient_dct_taper_strength=0.0,
         transient_dct_normalize_coefficients=True,
-        use_harmonic_age_modulation=False,
-        harmonic_age_hidden_size=32,
-        harmonic_age_modulation_scale=1.0,
-        use_harmonic_age_envelope=False,
-        harmonic_age_total_decay_seconds=1.2,
-        harmonic_age_low_decay_seconds=1.4,
-        harmonic_age_high_decay_seconds=0.35,
-        harmonic_age_envelope_floor=0.05,
         scale_f0_input=True,
         f0_min_hz=30.0,
         f0_max_hz=330.0,
@@ -203,6 +207,16 @@ class BassDDSPV2(nn.Module):
         self.use_sustain_branch = bool(use_sustain_branch)
         self.use_noise_branch = bool(use_noise_branch)
         self.use_reverb = bool(use_reverb)
+        self.n_wavetables = int(n_wavetables)
+        self.wavetable_length = int(wavetable_length)
+        self.wavetable_init_std = float(wavetable_init_std)
+        self.sustain_fade_seconds = float(sustain_fade_seconds)
+        self.harmonic_indicator_a = float(harmonic_indicator_a)
+        self.harmonic_indicator_b = float(harmonic_indicator_b)
+        self.harmonic_gate_floor = float(harmonic_gate_floor)
+        self.loudness_gain_db_per_std = float(loudness_gain_db_per_std)
+        self.loudness_gain_min = float(loudness_gain_min)
+        self.loudness_gain_max = float(loudness_gain_max)
         self.transient_seconds = float(transient_seconds)
         self.transient_type = str(transient_type)
         self.scale_f0_input = bool(scale_f0_input)
@@ -218,22 +232,6 @@ class BassDDSPV2(nn.Module):
         self.transient_dct_normalize_coefficients = bool(
             transient_dct_normalize_coefficients
         )
-        self.use_harmonic_age_modulation = bool(use_harmonic_age_modulation)
-        self.harmonic_age_modulation_scale = float(harmonic_age_modulation_scale)
-        self.use_harmonic_age_envelope = bool(use_harmonic_age_envelope)
-        self.harmonic_age_total_decay_seconds = max(
-            1e-4,
-            float(harmonic_age_total_decay_seconds),
-        )
-        self.harmonic_age_low_decay_seconds = max(
-            1e-4,
-            float(harmonic_age_low_decay_seconds),
-        )
-        self.harmonic_age_high_decay_seconds = max(
-            1e-4,
-            float(harmonic_age_high_decay_seconds),
-        )
-        self.harmonic_age_envelope_floor = float(harmonic_age_envelope_floor)
         if self.transient_type not in {"waveform_bank", "dct", "dct_bank"}:
             raise ValueError(
                 "transient_type must be 'waveform_bank', 'dct', or 'dct_bank', "
@@ -243,6 +241,10 @@ class BassDDSPV2(nn.Module):
             raise ValueError("transient_dct_components must be positive")
         if self.transient_dct_bank_components <= 0:
             raise ValueError("transient_dct_bank_components must be positive")
+        if self.n_wavetables <= 0:
+            raise ValueError("n_wavetables must be positive")
+        if self.wavetable_length <= 1:
+            raise ValueError("wavetable_length must be greater than 1")
 
         f0_min_hz = max(float(f0_min_hz), 1e-6)
         f0_max_hz = max(float(f0_max_hz), f0_min_hz + 1e-6)
@@ -251,7 +253,7 @@ class BassDDSPV2(nn.Module):
         self.register_buffer("f0_min_midi", torch.tensor(f0_min_midi))
         self.register_buffer("f0_max_midi", torch.tensor(f0_max_midi))
 
-        self.n_articulation_controls = 4 if self.use_note_shape_controls else 2
+        self.n_articulation_controls = 5 if self.use_note_shape_controls else 2
         self.articulation_encoder = ArticulationEncoder(
             n_articulation=n_articulation,
             embedding_size=articulation_embedding_size,
@@ -294,20 +296,44 @@ class BassDDSPV2(nn.Module):
             )
 
         self.out_mlp = mlp(hidden_size + 2 + z_size, hidden_size, 3)
-        self.harmonic_proj = nn.Linear(hidden_size, n_harmonic + 1)
-        if self.use_harmonic_age_modulation:
-            harmonic_age_hidden_size = int(harmonic_age_hidden_size)
-            self.harmonic_age_mlp = nn.Sequential(
-                nn.Linear(1, harmonic_age_hidden_size),
-                nn.LayerNorm(harmonic_age_hidden_size),
-                nn.LeakyReLU(),
-                nn.Linear(harmonic_age_hidden_size, n_harmonic + 1),
-            )
-            nn.init.zeros_(self.harmonic_age_mlp[-1].weight)
-            nn.init.zeros_(self.harmonic_age_mlp[-1].bias)
-        if self.use_harmonic_age_envelope:
-            harmonic_position = torch.linspace(0.0, 1.0, int(n_harmonic)).reshape(1, 1, -1)
-            self.register_buffer("harmonic_age_position", harmonic_position)
+        self.sustain_attention_proj = nn.Linear(hidden_size, self.n_wavetables)
+        self.sustain_amp_proj = nn.Linear(hidden_size, 1)
+        wavetable = torch.randn(
+            self.n_wavetables,
+            self.wavetable_length,
+        ) * self.wavetable_init_std
+        phase = torch.linspace(
+            0.0,
+            2.0 * math.pi,
+            self.wavetable_length + 1,
+        )[:-1]
+        if self.n_wavetables > 0:
+            wavetable[0] = torch.sin(phase)
+        if self.n_wavetables > 1:
+            wavetable[1] = torch.sin(2.0 * phase) * 0.75
+        if self.n_wavetables > 2:
+            wavetable[2] = torch.sin(3.0 * phase) * 0.5
+        if self.n_wavetables > 3:
+            wavetable[3] = torch.sin(4.0 * phase) * 0.35
+        self.sustain_wavetables = nn.Parameter(wavetable)
+        fundamental_attention = torch.zeros(1, 1, self.n_wavetables)
+        if self.n_wavetables > 0:
+            fundamental_attention[..., 0] = 1.0
+        self.register_buffer("fundamental_attention", fundamental_attention)
+
+        def _inverse_softplus(value):
+            value = max(float(value), 1e-4)
+            return math.log(math.exp(value) - 1.0)
+
+        decay_values = torch.tensor([
+            _inverse_softplus(sustain_age_mix_rate),
+            _inverse_softplus(noise_decay_rate),
+            _inverse_softplus(transient_decay_rate),
+        ])
+        if learnable_decay_rates:
+            self.branch_decay_raw = nn.Parameter(decay_values)
+        else:
+            self.register_buffer("branch_decay_raw", decay_values)
         self.noise_proj = nn.Linear(hidden_size, n_bands)
 
         transient_samples = max(
@@ -382,6 +408,9 @@ class BassDDSPV2(nn.Module):
         self.last_harmonic_frame_amplitudes = None
         self.last_harmonic_age_multiplier = None
         self.last_harmonic_age_envelope = None
+        self.last_sustain_attention = None
+        self.last_sustain_loudness_gain = None
+        self.last_sustain_harmonic_gate = None
 
     @staticmethod
     def _build_idct_basis(size):
@@ -433,6 +462,17 @@ class BassDDSPV2(nn.Module):
             control = control.unsqueeze(-1)
         return control.to(pitch.device, dtype=pitch.dtype)
 
+    def _upsample_linear(self, control, length=None):
+        control = control.permute(0, 2, 1)
+        size = control.shape[-1] * int(self.block_size.detach().cpu().item())
+        control = nn.functional.interpolate(
+            control,
+            size=size,
+            mode="linear",
+            align_corners=False,
+        ).permute(0, 2, 1)
+        return control if length is None else control[:, :length]
+
     def _run_recurrent(self, hidden):
         if self.recurrent_type == "gru":
             return self.gru(hidden)[0]
@@ -470,10 +510,11 @@ class BassDDSPV2(nn.Module):
         self,
         pitch,
         articulation,
-        onset,
+        onset_strength,
         offset,
         gate,
         note_age,
+        periodicity,
     ):
         shape = pitch.shape[:2]
         if articulation is None:
@@ -482,13 +523,14 @@ class BassDDSPV2(nn.Module):
             articulation = articulation.squeeze(-1)
 
         controls = [
-            self._frame_control(onset, pitch, 0.0),
+            self._frame_control(onset_strength, pitch, 0.0),
             self._frame_control(offset, pitch, 0.0),
         ]
         if self.use_note_shape_controls:
             controls.extend([
                 self._frame_control(gate, pitch, 1.0),
                 self._frame_control(note_age, pitch, 0.0),
+                self._frame_control(periodicity, pitch, 1.0),
             ])
         return self.articulation_encoder(
             articulation.to(pitch.device),
@@ -500,19 +542,21 @@ class BassDDSPV2(nn.Module):
         pitch,
         loudness,
         articulation,
-        onset,
+        onset_strength,
         offset,
         gate,
         note_age,
+        periodicity,
         realtime,
     ):
         z = self._encode_articulation(
             pitch,
             articulation,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
         )
         pitch_control = self._pitch_for_network(pitch)
         hidden = torch.cat([
@@ -546,6 +590,30 @@ class BassDDSPV2(nn.Module):
             "transient_gain_db": float(gains[2]),
         }
 
+    def _branch_decay_rate(self, index, reference):
+        return nn.functional.softplus(self.branch_decay_raw[index]).to(
+            device=reference.device,
+            dtype=reference.dtype,
+        ) + 1e-4
+
+    def _note_decay(self, note_age_audio, index):
+        rate = self._branch_decay_rate(index, note_age_audio)
+        return torch.exp(-rate * note_age_audio.clamp_min(0.0))
+
+    def _loudness_gain(self, loudness, length):
+        gain_db = loudness * self.loudness_gain_db_per_std
+        gain = torch.pow(torch.tensor(10.0, device=loudness.device), gain_db / 20.0)
+        gain = gain.clamp(self.loudness_gain_min, self.loudness_gain_max)
+        return self._upsample_linear(gain, length)
+
+    def _harmonic_gate(self, periodicity, length):
+        h = torch.sigmoid(
+            self.harmonic_indicator_a
+            * (periodicity.clamp(0.0, 1.0) - self.harmonic_indicator_b)
+        )
+        gate = self.harmonic_gate_floor + (1.0 - self.harmonic_gate_floor) * h
+        return self._upsample_linear(gate, length)
+
     def _audio_note_age(self, note_age, length, block_size):
         base = upsample(note_age, self.block_size)[:, :length]
         frames = note_age.shape[1]
@@ -558,65 +626,77 @@ class BassDDSPV2(nn.Module):
         offset = offset.repeat(1, frames, 1, 1).reshape(1, frames * block_size, 1)
         return base + offset[:, :length]
 
-    def _harmonic_branch(self, hidden, pitch, gate, note_age=None, realtime=False):
-        param = scale_function(self.harmonic_proj(hidden))
-        total_amp = param[..., :1]
-        amplitudes = param[..., 1:]
-        if self.use_harmonic_age_modulation and note_age is not None:
-            age_raw = self.harmonic_age_mlp(note_age.clamp_min(0.0))
-            age_multiplier = torch.exp(
-                torch.tanh(age_raw) * self.harmonic_age_modulation_scale
-            )
-            total_amp = total_amp * age_multiplier[..., :1]
-            amplitudes = amplitudes * age_multiplier[..., 1:]
-            self.last_harmonic_age_multiplier = age_multiplier.detach()
-        else:
-            self.last_harmonic_age_multiplier = None
-        amplitudes = remove_above_nyquist(amplitudes, pitch, self.sampling_rate)
-        amplitudes = amplitudes / amplitudes.sum(-1, keepdim=True).clamp_min(1e-7)
-        amplitudes = amplitudes * total_amp
-        if self.use_harmonic_age_envelope and note_age is not None:
-            age = note_age.clamp_min(0.0)
-            floor = self.harmonic_age_envelope_floor
-            total_env = floor + (1.0 - floor) * torch.exp(
-                -age / self.harmonic_age_total_decay_seconds
-            )
-            harmonic_decay = (
-                self.harmonic_age_low_decay_seconds
-                + (
-                    self.harmonic_age_high_decay_seconds
-                    - self.harmonic_age_low_decay_seconds
-                )
-                * self.harmonic_age_position.to(hidden)
-            )
-            harmonic_env = floor + (1.0 - floor) * torch.exp(
-                -age / harmonic_decay
-            )
-            amplitudes = amplitudes * total_env * harmonic_env
-            self.last_harmonic_age_envelope = torch.cat(
-                [total_env, harmonic_env],
-                dim=-1,
-            ).detach()
-        else:
-            self.last_harmonic_age_envelope = None
-        self.last_harmonic_frame_amplitudes = amplitudes.detach()
-
-        amplitudes = upsample(amplitudes, self.block_size)
-        pitch = upsample(pitch, self.block_size)
-        gate = upsample(gate, self.block_size)
-
+    def _wavetable_lookup(self, pitch, realtime=False):
+        wavetable = torch.tanh(self.sustain_wavetables)
+        length = pitch.shape[1]
+        phase_increment = pitch.squeeze(-1) * self.wavetable_length / self.sampling_rate
+        phase = torch.cumsum(phase_increment, dim=1)
         if realtime:
-            n_harmonic = amplitudes.shape[-1]
-            omega = torch.cumsum(2 * math.pi * pitch / self.sampling_rate, 1)
-            omega = omega + self.phase
-            self.phase.copy_(omega[0, -1, 0] % (2 * math.pi))
-            omegas = omega * torch.arange(1, n_harmonic + 1).to(omega)
-            harmonic = (torch.sin(omegas) * amplitudes).sum(-1, keepdim=True)
-        else:
-            harmonic = harmonic_synth(pitch, amplitudes, self.sampling_rate)
-        return harmonic * gate
+            phase = phase + self.phase.to(phase)
+            self.phase.copy_(phase[0, -1] % self.wavetable_length)
+        phase = torch.remainder(phase, self.wavetable_length)
+        index_0 = torch.floor(phase).long()
+        index_1 = torch.remainder(index_0 + 1, self.wavetable_length)
+        alpha = (phase - index_0.to(phase)).unsqueeze(-1)
 
-    def _noise_branch(self, hidden, gate):
+        flat_0 = index_0.reshape(-1)
+        flat_1 = index_1.reshape(-1)
+        value_0 = wavetable[:, flat_0].transpose(0, 1).reshape(
+            pitch.shape[0],
+            length,
+            self.n_wavetables,
+        )
+        value_1 = wavetable[:, flat_1].transpose(0, 1).reshape(
+            pitch.shape[0],
+            length,
+            self.n_wavetables,
+        )
+        return value_0 + alpha * (value_1 - value_0)
+
+    def _wavetable_sustain_branch(
+        self,
+        hidden,
+        pitch,
+        gate,
+        note_age,
+        loudness,
+        periodicity,
+        realtime=False,
+    ):
+        block_size = int(self.block_size.detach().cpu().item())
+        length = hidden.shape[1] * block_size
+        pitch_audio = self._upsample_linear(pitch, length)
+        gate_audio = self._upsample_linear(gate, length).clamp(0.0, 1.0)
+        note_age_audio = self._audio_note_age(note_age, length, block_size)
+
+        waves = self._wavetable_lookup(pitch_audio, realtime)
+        weights = torch.softmax(self.sustain_attention_proj(hidden), dim=-1)
+        age_mix = 1.0 - self._note_decay(note_age.clamp_min(0.0), 0)
+        weights = (
+            (1.0 - age_mix) * weights
+            + age_mix * self.fundamental_attention.to(weights)
+        )
+        weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-7)
+        weights_audio = self._upsample_linear(weights, length)
+
+        signal = torch.sum(waves * weights_audio, dim=-1, keepdim=True)
+        amplitude = scale_function(self.sustain_amp_proj(hidden))
+        amplitude = self._upsample_linear(amplitude, length)
+        loudness_gain = self._loudness_gain(loudness, length)
+        harmonic_gate = self._harmonic_gate(periodicity, length)
+        fade_in = (
+            note_age_audio / max(self.sustain_fade_seconds, 1e-4)
+        ).clamp(0.0, 1.0)
+
+        self.last_sustain_attention = weights.detach()
+        self.last_sustain_loudness_gain = loudness_gain.detach()
+        self.last_sustain_harmonic_gate = harmonic_gate.detach()
+        self.last_harmonic_frame_amplitudes = None
+        self.last_harmonic_age_multiplier = None
+        self.last_harmonic_age_envelope = None
+        return signal * amplitude * gate_audio * fade_in * loudness_gain * harmonic_gate
+
+    def _noise_branch(self, hidden):
         param = scale_function(self.noise_proj(hidden) - 5)
         impulse = amp_to_impulse_response(param, self.block_size)
         block_size = int(self.block_size.detach().cpu().item())
@@ -627,7 +707,7 @@ class BassDDSPV2(nn.Module):
         ).to(impulse) * 2 - 1
         noise = fft_convolve(noise, impulse).contiguous()
         noise = noise.reshape(noise.shape[0], -1, 1)
-        return noise * upsample(gate, self.block_size)
+        return noise
 
     def _waveform_bank_transient_branch(self, hidden, articulation, gate, note_age):
         block_size = int(self.block_size.detach().cpu().item())
@@ -663,12 +743,9 @@ class BassDDSPV2(nn.Module):
             articulation_audio.reshape(-1),
             sample_index.reshape(-1),
         ].reshape(hidden.shape[0], length, 1)
-        envelope = (
-            1.0 - age_seconds.unsqueeze(-1) / max(self.transient_seconds, 1e-4)
-        ).clamp(0.0, 1.0) ** 2
-        return waveform * envelope * gate_audio * gain
+        return waveform * gain
 
-    def _dct_transient_branch(self, hidden, gate, note_age, onset=None):
+    def _dct_transient_branch(self, hidden, gate, note_age):
         block_size = int(self.block_size.detach().cpu().item())
         length = hidden.shape[1] * block_size
         gate_audio = upsample(gate, self.block_size)[:, :length]
@@ -713,7 +790,7 @@ class BassDDSPV2(nn.Module):
         waveform = frames.reshape(hidden.shape[0], length, 1)
         gain = scale_function(self.transient_gain(hidden)) + self.transient_dct_gain_floor
         gain = upsample(gain, self.block_size)[:, :length]
-        return waveform * envelope * gate_audio * gain
+        return waveform * gain
 
     def _dct_bank_transient_branch(self, hidden, articulation, gate, note_age):
         block_size = int(self.block_size.detach().cpu().item())
@@ -747,14 +824,11 @@ class BassDDSPV2(nn.Module):
             articulation_audio.reshape(-1),
             sample_index.reshape(-1),
         ].reshape(hidden.shape[0], length, 1)
-        envelope = (
-            1.0 - age_seconds.unsqueeze(-1) / max(self.transient_seconds, 1e-4)
-        ).clamp(0.0, 1.0) ** 2
-        return waveform * envelope * gate_audio * gain
+        return waveform * gain
 
-    def _transient_branch(self, hidden, articulation, gate, note_age, onset=None):
+    def _transient_branch(self, hidden, articulation, gate, note_age):
         if self.transient_type == "dct":
-            return self._dct_transient_branch(hidden, gate, note_age, onset)
+            return self._dct_transient_branch(hidden, gate, note_age)
         if self.transient_type == "dct_bank":
             return self._dct_bank_transient_branch(
                 hidden,
@@ -774,29 +848,37 @@ class BassDDSPV2(nn.Module):
         pitch,  # (B, T, 1)
         loudness,  # (B, T, 1)
         articulation=None,  # (B, T) or None
-        onset=None,  # (B, T, 1) or None
+        onset_strength=None,  # (B, T, 1) or None
         offset=None,  # (B, T, 1) or None
         gate=None,  # (B, T, 1) or None
         note_age=None,  # (B, T, 1) or None
+        periodicity=None,  # (B, T, 1) or None
         realtime=False,  # scalar bool
     ):
-        onset = self._frame_control(onset, pitch, 0.0)  # (B, T, 1)
+        onset_strength = self._frame_control(onset_strength, pitch, 0.0)  # (B, T, 1)
         offset = self._frame_control(offset, pitch, 0.0)  # (B, T, 1)
         gate = self._frame_control(gate, pitch, 1.0)  # (B, T, 1)
         note_age = self._frame_control(note_age, pitch, 0.0)  # (B, T, 1)
-        hidden = self._decoder_hidden(pitch, loudness, articulation, onset, offset, gate, note_age, realtime)  # (B, T, H)
+        periodicity = self._frame_control(periodicity, pitch, 1.0)  # (B, T, 1)
+        hidden = self._decoder_hidden(pitch, loudness, articulation, onset_strength, offset, gate, note_age, periodicity, realtime)  # (B, T, H)
 
         block_size = int(self.block_size.detach().cpu().item())  # scalar int
         length = hidden.shape[1] * block_size  # scalar int, N = T * block_size
         zero = torch.zeros(hidden.shape[0], length, 1, dtype=hidden.dtype, device=hidden.device)  # (B, N, 1)
 
-        sustain_raw = self._harmonic_branch(hidden, pitch, gate, note_age, realtime) if self.use_sustain_branch else zero  # (B, N, 1)
-        noise_raw = self._noise_branch(hidden, gate) if self.use_noise_branch else zero  # (B, N, 1)
-        transient_raw = self._transient_branch(hidden, articulation, gate, note_age, onset) if self.use_transient_branch else zero  # (B, N, 1)
+        note_age_audio = self._audio_note_age(note_age, length, block_size)  # (B, N, 1)
+        gate_audio = self._upsample_linear(gate, length).clamp(0.0, 1.0)  # (B, N, 1)
+        onset_audio = self._upsample_linear(onset_strength, length).clamp(0.0, 1.0)  # (B, N, 1)
+        noise_decay = self._note_decay(note_age_audio, 1)  # (B, N, 1)
+        transient_decay = self._note_decay(note_age_audio, 2)  # (B, N, 1)
+
+        sustain_raw = self._wavetable_sustain_branch(hidden, pitch, gate, note_age, loudness, periodicity, realtime) if self.use_sustain_branch else zero  # (B, N, 1)
+        noise_raw = self._noise_branch(hidden) if self.use_noise_branch else zero  # (B, N, 1)
+        transient_raw = self._transient_branch(hidden, articulation, gate, note_age) if self.use_transient_branch else zero  # (B, N, 1)
 
         sustain = sustain_raw * self._branch_gain(0, sustain_raw)  # (B, N, 1)
-        noise = noise_raw * self._branch_gain(1, noise_raw)  # (B, N, 1)
-        transient = transient_raw * self._branch_gain(2, transient_raw)  # (B, N, 1)
+        noise = noise_raw * gate_audio * onset_audio * noise_decay * self._branch_gain(1, noise_raw)  # (B, N, 1)
+        transient = transient_raw * gate_audio * onset_audio * transient_decay * self._branch_gain(2, transient_raw)  # (B, N, 1)
         signal = sustain + noise + transient  # (B, N, 1)
         if self.use_reverb:  # scalar bool
             signal = self.reverb(signal)  # (B, N, 1)
@@ -817,19 +899,21 @@ class BassDDSPV2(nn.Module):
         pitch,  # (B, T, 1)
         loudness,  # (B, T, 1)
         articulation=None,  # (B, T) or None
-        onset=None,  # (B, T, 1) or None
+        onset_strength=None,  # (B, T, 1) or None
         offset=None,  # (B, T, 1) or None
         gate=None,  # (B, T, 1) or None
         note_age=None,  # (B, T, 1) or None
+        periodicity=None,  # (B, T, 1) or None
     ):
         return self._forward_impl(  # (B, N, 1)
             pitch,  # (B, T, 1)
             loudness,  # (B, T, 1)
             articulation=articulation,  # (B, T) or None
-            onset=onset,  # (B, T, 1) or None
+            onset_strength=onset_strength,  # (B, T, 1) or None
             offset=offset,  # (B, T, 1) or None
             gate=gate,  # (B, T, 1) or None
             note_age=note_age,  # (B, T, 1) or None
+            periodicity=periodicity,  # (B, T, 1) or None
             realtime=False,  # scalar bool
         )
 
@@ -838,18 +922,20 @@ class BassDDSPV2(nn.Module):
         pitch,  # (B, T, 1)
         loudness,  # (B, T, 1)
         articulation=None,  # (B, T) or None
-        onset=None,  # (B, T, 1) or None
+        onset_strength=None,  # (B, T, 1) or None
         offset=None,  # (B, T, 1) or None
         gate=None,  # (B, T, 1) or None
         note_age=None,  # (B, T, 1) or None
+        periodicity=None,  # (B, T, 1) or None
     ):
         return self._forward_impl(  # (B, N, 1)
             pitch,  # (B, T, 1)
             loudness,  # (B, T, 1)
             articulation=articulation,  # (B, T) or None
-            onset=onset,  # (B, T, 1) or None
+            onset_strength=onset_strength,  # (B, T, 1) or None
             offset=offset,  # (B, T, 1) or None
             gate=gate,  # (B, T, 1) or None
             note_age=note_age,  # (B, T, 1) or None
+            periodicity=periodicity,  # (B, T, 1) or None
             realtime=True,  # scalar bool
         )

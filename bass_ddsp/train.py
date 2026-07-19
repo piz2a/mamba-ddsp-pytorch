@@ -15,18 +15,6 @@ from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
 
 
-def frame_log_rms(signal, block_size):
-    usable = signal.shape[-1] - (signal.shape[-1] % block_size)
-    signal = signal[..., :usable]
-    frames = signal.reshape(signal.shape[0], -1, block_size)
-    rms = torch.sqrt(torch.mean(frames * frames, dim=-1) + 1e-7)
-    return torch.log(rms + 1e-7)
-
-
-def masked_mean(value, mask):
-    return (value * mask).sum() / mask.sum().clamp_min(1.0)
-
-
 def multiscale_spectral_loss(target, reconstruction, scales, overlap):
     target_stft = multiscale_fft(target, scales, overlap)
     reconstruction_stft = multiscale_fft(reconstruction, scales, overlap)
@@ -35,76 +23,6 @@ def multiscale_spectral_loss(target, reconstruction, scales, overlap):
         loss = loss + (s_x - s_y).abs().mean()
         loss = loss + (safe_log(s_x) - safe_log(s_y)).abs().mean()
     return loss
-
-
-def onset_frame_mask(onset, window_seconds, sampling_rate, block_size):
-    if onset is None or window_seconds <= 0:
-        return None
-
-    onset_frames = onset.squeeze(-1)
-    window_frames = max(1, int(np.ceil(window_seconds * sampling_rate / block_size)))
-    mask = torch.zeros_like(onset_frames)
-    for batch_idx in range(onset_frames.shape[0]):
-        starts = torch.nonzero(onset_frames[batch_idx] > 0.05, as_tuple=False)
-        for start in starts.flatten():
-            start_idx = int(start.item())
-            end_idx = min(mask.shape[1], start_idx + window_frames)
-            mask[batch_idx, start_idx:end_idx] = 1.0
-    return mask
-
-
-def frame_mask_to_audio(mask, block_size, length):
-    if mask is None:
-        return None
-    audio_mask = mask.repeat_interleave(block_size, dim=1)
-    if audio_mask.shape[-1] < length:
-        audio_mask = torch.nn.functional.pad(audio_mask, (0, length - audio_mask.shape[-1]))
-    return audio_mask[:, :length]
-
-
-def highpass_transient_loss(target, reconstruction, frame_mask, block_size):
-    audio_mask = frame_mask_to_audio(frame_mask, block_size, target.shape[-1])
-    if audio_mask is None or not torch.any(audio_mask > 0):
-        return torch.tensor(0.0, device=target.device)
-
-    target_hp = target[:, 1:] - target[:, :-1]
-    reconstruction_hp = reconstruction[:, 1:] - reconstruction[:, :-1]
-    mask = audio_mask[:, 1:]
-    return ((target_hp - reconstruction_hp).abs() * mask).sum() / mask.sum().clamp_min(1.0)
-
-
-def normalized_highpass_transient_loss(target, reconstruction, frame_mask, block_size):
-    audio_mask = frame_mask_to_audio(frame_mask, block_size, target.shape[-1])
-    if audio_mask is None or not torch.any(audio_mask > 0):
-        return torch.tensor(0.0, device=target.device)
-
-    target_hp = target[:, 1:] - target[:, :-1]
-    reconstruction_hp = reconstruction[:, 1:] - reconstruction[:, :-1]
-    mask = audio_mask[:, 1:]
-    diff = ((target_hp - reconstruction_hp).abs() * mask).sum()
-    reference = (target_hp.abs() * mask).sum().clamp_min(1e-5)
-    return diff / reference
-
-
-def highpass_onset_log_rms_loss(target, reconstruction, frame_mask, block_size):
-    if frame_mask is None or not torch.any(frame_mask > 0):
-        return torch.tensor(0.0, device=target.device)
-
-    target_hp = torch.nn.functional.pad(target[:, 1:] - target[:, :-1], (0, 1))
-    reconstruction_hp = torch.nn.functional.pad(
-        reconstruction[:, 1:] - reconstruction[:, :-1],
-        (0, 1),
-    )
-    target_log_rms = frame_log_rms(target_hp, block_size)
-    reconstruction_log_rms = frame_log_rms(reconstruction_hp, block_size)
-    frame_count = min(
-        target_log_rms.shape[1],
-        reconstruction_log_rms.shape[1],
-        frame_mask.shape[1],
-    )
-    value = (target_log_rms[:, :frame_count] - reconstruction_log_rms[:, :frame_count]).abs()
-    mask = frame_mask[:, :frame_count]
-    return masked_mean(value, mask)
 
 
 def branch_rms(model, name, device):
@@ -127,7 +45,30 @@ def parse_args():
     parser.add_argument("--device")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--init-state", help="Optional checkpoint to load before training.")
+    parser.add_argument("--wandb", action="store_true", help="Log scalar metrics to Weights & Biases.")
+    parser.add_argument("--wandb-project", default="bass-ddsp-v2")
+    parser.add_argument("--wandb-entity")
+    parser.add_argument("--wandb-name")
     return parser.parse_args()
+
+
+def maybe_init_wandb(args, config, run_dir):
+    if not args.wandb:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError(
+            "wandb is not installed. Install it or run without --wandb."
+        ) from exc
+
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_name or args.name,
+        dir=run_dir,
+        config=config,
+    )
 
 
 def make_dataset(config):
@@ -163,30 +104,32 @@ def set_lr(opt, start_lr, stop_lr, decay_over, step):
 
 
 def unpack_batch(batch, device):
-    if len(batch) != 8:
+    if len(batch) != 9:
         raise ValueError(
-            "BassDDSPV2 expects 8 tensors: audio, pitch, loudness, articulation, "
-            f"onset, offset, gate, note_age. Got {len(batch)}."
+            "BassDDSPV2 expects 9 tensors: audio, pitch, loudness, articulation, "
+            f"onset_strength, offset, gate, note_age, periodicity. Got {len(batch)}."
         )
     (
         audio,
         pitch,
         loudness,
         articulation,
-        onset,
+        onset_strength,
         offset,
         gate,
         note_age,
+        periodicity,
     ) = batch
     return {
         "audio": audio.to(device),
         "pitch": pitch.unsqueeze(-1).to(device),
         "loudness": loudness.unsqueeze(-1).to(device),
         "articulation": articulation.to(device),
-        "onset": onset.unsqueeze(-1).to(device),
+        "onset_strength": onset_strength.unsqueeze(-1).to(device),
         "offset": offset.unsqueeze(-1).to(device),
         "gate": gate.unsqueeze(-1).to(device),
         "note_age": note_age.unsqueeze(-1).to(device),
+        "periodicity": periodicity.unsqueeze(-1).to(device),
     }
 
 
@@ -251,6 +194,7 @@ def main():
         yaml.safe_dump(config, out_config)
 
     writer = SummaryWriter(run_dir, flush_secs=20)
+    wandb_run = maybe_init_wandb(args, config, run_dir)
     opt = torch.optim.Adam(model.parameters(), lr=args.start_lr)
     loss_csv = open(path.join(run_dir, "loss.csv"), "w", newline="")
     loss_writer = csv.writer(loss_csv)
@@ -287,10 +231,11 @@ def main():
                 batch["pitch"],
                 loudness,
                 articulation=batch["articulation"],
-                onset=batch["onset"],
+                onset_strength=batch["onset_strength"],
                 offset=batch["offset"],
                 gate=batch["gate"],
                 note_age=batch["note_age"],
+                periodicity=batch["periodicity"],
             ).squeeze(-1)
             target = batch["audio"]
 
@@ -300,77 +245,11 @@ def main():
                 config["train"]["scales"],
                 config["train"]["overlap"],
             )
-            rms_loss_weight = float(config["train"].get("rms_loss_weight", 0.0))
             rms_loss = torch.tensor(0.0, device=device)
-            if rms_loss_weight:
-                rms_loss = (
-                    frame_log_rms(target, config["preprocess"]["block_size"])
-                    - frame_log_rms(y, config["preprocess"]["block_size"])
-                ).abs().mean()
-
-            onset_loss_weight = float(config["train"].get("onset_loss_weight", 0.0))
-            transient_loss_weight = float(config["train"].get("transient_loss_weight", 0.0))
-            transient_branch_loss_weight = float(
-                config["train"].get("transient_branch_loss_weight", 0.0)
-            )
             onset_spectral_loss = torch.tensor(0.0, device=device)
             transient_loss = torch.tensor(0.0, device=device)
             transient_branch_loss = torch.tensor(0.0, device=device)
-            onset_mask = None
-            if onset_loss_weight or transient_loss_weight or transient_branch_loss_weight:
-                onset_mask = onset_frame_mask(
-                    batch["onset"],
-                    float(config["train"].get("onset_loss_seconds", 0.15)),
-                    config["preprocess"]["sampling_rate"],
-                    config["preprocess"]["block_size"],
-                )
-            if onset_loss_weight and onset_mask is not None:
-                audio_mask = frame_mask_to_audio(
-                    onset_mask,
-                    config["preprocess"]["block_size"],
-                    target.shape[-1],
-                )
-                onset_spectral_loss = multiscale_spectral_loss(
-                    target * audio_mask,
-                    y * audio_mask,
-                    config["train"]["scales"],
-                    config["train"]["overlap"],
-                )
-            if transient_loss_weight and onset_mask is not None:
-                transient_loss = highpass_transient_loss(
-                    target,
-                    y,
-                    onset_mask,
-                    config["preprocess"]["block_size"],
-                )
-            if transient_branch_loss_weight and onset_mask is not None:
-                transient_branch = model.last_branch_outputs.get("transient")
-                if transient_branch is not None:
-                    transient_branch_loss = normalized_highpass_transient_loss(
-                        target,
-                        transient_branch.squeeze(-1),
-                        onset_mask,
-                        config["preprocess"]["block_size"],
-                    )
-                    transient_branch_loss = transient_branch_loss + highpass_onset_log_rms_loss(
-                        target,
-                        transient_branch.squeeze(-1),
-                        onset_mask,
-                        config["preprocess"]["block_size"],
-                    )
-
-            loss = (
-                spectral_loss
-                + rms_loss_weight * rms_loss
-                + onset_loss_weight * onset_spectral_loss
-                + transient_loss_weight * transient_loss
-                + transient_branch_loss_weight * transient_branch_loss
-            )
-            transient_branch_pretrain_steps = int(
-                config["train"].get("transient_branch_pretrain_steps", 0)
-            )
-            if step < transient_branch_pretrain_steps:
-                loss = loss + transient_branch_loss_weight * transient_branch_loss
+            loss = spectral_loss
 
             lr = set_lr(opt, args.start_lr, args.stop_lr, args.decay_over, step)
             opt.zero_grad()
@@ -404,6 +283,8 @@ def main():
             }
             for key, value in metrics.items():
                 writer.add_scalar(key, value, step)
+            if wandb_run is not None:
+                wandb_run.log(metrics, step=step)
             loss_writer.writerow([
                 step,
                 metrics["loss"],
@@ -449,6 +330,8 @@ def main():
 
     loss_csv.close()
     writer.close()
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

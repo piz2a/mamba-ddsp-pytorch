@@ -118,6 +118,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         edge_fade_seconds=0.004,
         release_fade_seconds=0.035,
         event_width_seconds=0.032,
+        hpss_margin=8.0,
+        periodicity_use_crepe_confidence=True,
+        periodicity_crepe_model="tiny",
+        periodicity_crepe_device="cpu",
+        periodicity_crepe_mix=0.35,
+        periodicity_mu_prior=0.25,
+        periodicity_dn_prior=0.45,
         include_expression_styles=EXPRESSION_STYLES,
         include_string_numbers=(1, 2, 3, 4),
         cache_size=384,
@@ -167,6 +174,13 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             1,
             int(float(event_width_seconds) * sampling_rate),
         )
+        self.hpss_margin = float(hpss_margin)
+        self.periodicity_use_crepe_confidence = bool(periodicity_use_crepe_confidence)
+        self.periodicity_crepe_model = str(periodicity_crepe_model)
+        self.periodicity_crepe_device = str(periodicity_crepe_device)
+        self.periodicity_crepe_mix = float(periodicity_crepe_mix)
+        self.periodicity_mu_prior = float(periodicity_mu_prior)
+        self.periodicity_dn_prior = float(periodicity_dn_prior)
         self.include_expression_styles = {
             str(expression)
             for expression in include_expression_styles
@@ -192,6 +206,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.seed = None if seed is None else int(seed)
         self.frames = self.signal_length // self.block_size
         self._audio_cache = OrderedDict()
+        self._periodicity_cache = OrderedDict()
 
         self.notes = []
         seen_names = set()
@@ -353,6 +368,104 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             self._audio_cache.popitem(last=False)
         return cached
 
+    @staticmethod
+    def _import_torchcrepe():
+        try:
+            import importlib.machinery
+            import importlib.util
+            import sys
+            import types
+
+            def _install_torchaudio_stub():
+                torchaudio = types.ModuleType("torchaudio")
+                torchaudio.__spec__ = importlib.machinery.ModuleSpec(
+                    "torchaudio",
+                    loader=None,
+                )
+
+                def _missing_load(*args, **kwargs):
+                    raise RuntimeError(
+                        "torchaudio is not installed. Bass-DDSP loads audio through "
+                        "librosa, so torchcrepe file-loading helpers are unavailable."
+                    )
+
+                torchaudio.load = _missing_load
+                sys.modules["torchaudio"] = torchaudio
+
+            if ("torchaudio" not in sys.modules
+                    and importlib.util.find_spec("torchaudio") is None):
+                _install_torchaudio_stub()
+
+            try:
+                import torchcrepe
+            except OSError as exc:
+                if "torchaudio" not in str(exc):
+                    raise
+                for module_name in list(sys.modules):
+                    if module_name == "torchcrepe" or module_name.startswith(
+                            "torchcrepe."):
+                        del sys.modules[module_name]
+                _install_torchaudio_stub()
+                import torchcrepe
+            return torchcrepe
+        except Exception:
+            return None
+
+    def _source_periodicity(self, note, audio):
+        if not self.periodicity_use_crepe_confidence:
+            return None
+        key = str(note.path)
+        cached = self._periodicity_cache.get(key)
+        if cached is not None:
+            self._periodicity_cache.move_to_end(key)
+            return cached
+
+        torchcrepe = self._import_torchcrepe()
+        if torchcrepe is None or audio.size <= 1:
+            return None
+
+        try:
+            if self.periodicity_crepe_device == "auto":
+                if torch.cuda.is_available():
+                    device = "cuda"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
+            else:
+                device = self.periodicity_crepe_device
+            signal = torch.from_numpy(audio.reshape(-1)).float().unsqueeze(0).to(device)
+            result = torchcrepe.predict(
+                signal,
+                self.sampling_rate,
+                hop_length=self.block_size,
+                fmin=self.pitch_fmin,
+                fmax=self.pitch_fmax,
+                model=self.periodicity_crepe_model,
+                decoder=torchcrepe.decode.weighted_argmax,
+                return_periodicity=True,
+                device=device,
+                pad=True,
+            )
+            _, periodicity = result
+            periodicity = (
+                periodicity.squeeze(0)
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+            if periodicity.size == 0:
+                return None
+            periodicity = np.clip(periodicity, 0.0, 1.0)
+        except Exception:
+            return None
+
+        self._periodicity_cache[key] = periodicity
+        if self.cache_size > 0 and len(self._periodicity_cache) > self.cache_size:
+            self._periodicity_cache.popitem(last=False)
+        return periodicity
+
     def _choose_rng(self, idx):
         if self.seed is not None:
             return random.Random((self.seed + int(idx) * 1000003) % (2**63 - 1))
@@ -362,6 +475,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
 
     def _random_note_audio(self, rng, note):
         audio, trim_info = self._load_note_audio(note)
+        self._source_periodicity(note, audio)
         target = rng.randint(self.min_note_samples, self.max_note_samples)
         cropped = False
         if audio.shape[0] >= target:
@@ -496,6 +610,68 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             self._event_pulse_track(offset_samples),
         )
 
+    def _hpss_onset_strength_track(self, audio, fallback):
+        if audio.size <= 1:
+            return fallback.astype(np.float32, copy=True)
+        try:
+            n_fft = min(1024, max(64, int(2 ** math.ceil(math.log2(self.block_size)))))
+            n_fft = min(n_fft, max(64, audio.shape[0]))
+            D = li.stft(
+                audio,
+                n_fft=n_fft,
+                hop_length=self.block_size,
+                win_length=n_fft,
+                center=True,
+            )
+            _, percussive = li.decompose.hpss(D, margin=self.hpss_margin)
+            strength = np.mean(np.abs(percussive), axis=0).astype(np.float32)
+            if strength.shape[0] > self.frames:
+                strength = strength[:self.frames]
+            elif strength.shape[0] < self.frames:
+                strength = np.pad(strength, (0, self.frames - strength.shape[0]))
+            peak = float(np.max(strength)) if strength.size else 0.0
+            if peak <= 1e-8:
+                return fallback.astype(np.float32, copy=True)
+            strength = strength / peak
+            strength = np.maximum(strength, fallback.astype(np.float32))
+            return np.clip(strength, 0.0, 1.0).astype(np.float32)
+        except Exception:
+            return fallback.astype(np.float32, copy=True)
+
+    def _periodicity_prior(self, interval):
+        value = 0.95
+        if interval.get("pluck") == "MU":
+            value = min(value, self.periodicity_mu_prior)
+        if interval.get("expression") == "DN":
+            value = min(value, self.periodicity_dn_prior)
+        return float(np.clip(value, 0.0, 1.0))
+
+    def _periodicity_track(self, intervals):
+        frame_positions = (
+            np.arange(self.frames, dtype=np.float32) * self.block_size
+            + self.block_size / 2
+        )
+        periodicity = np.zeros(self.frames, dtype=np.float32)
+        mix = float(np.clip(self.periodicity_crepe_mix, 0.0, 1.0))
+        for interval in intervals:
+            start = float(interval["start_sample"])
+            end = float(interval["end_sample"])
+            active = (frame_positions >= start) & (frame_positions < end)
+            if not np.any(active):
+                continue
+            prior = self._periodicity_prior(interval)
+            source_curve = self._periodicity_cache.get(interval.get("source_path", ""))
+            if source_curve is None or len(source_curve) == 0:
+                confidence = np.ones(int(np.sum(active)), dtype=np.float32)
+            else:
+                source_positions = frame_positions[active] - start
+                source_frames = np.floor(source_positions / self.block_size).astype(np.int64)
+                source_frames = np.clip(source_frames, 0, len(source_curve) - 1)
+                confidence = np.asarray(source_curve, dtype=np.float32)[source_frames]
+            confidence = np.clip(confidence, 0.0, 1.0)
+            periodicity[active] = prior * ((1.0 - mix) + mix * confidence)
+        return np.clip(periodicity, 0.0, 1.0).astype(np.float32)
+
     def _note_shape_tracks(self, intervals):
         frame_positions = (
             np.arange(self.frames, dtype=np.float32) * self.block_size
@@ -542,10 +718,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         pluck,
         expression,
         articulation,
-        onset,
+        onset_strength,
         offset,
         gate,
         note_age,
+        periodicity,
     ):
         if self.label_mode == "observed_articulation":
             if self.use_note_shape_controls:
@@ -554,10 +731,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
                     torch.from_numpy(pitch),
                     torch.from_numpy(loudness),
                     torch.from_numpy(articulation),
-                    torch.from_numpy(onset),
+                    torch.from_numpy(onset_strength),
                     torch.from_numpy(offset),
                     torch.from_numpy(gate),
                     torch.from_numpy(note_age),
+                    torch.from_numpy(periodicity),
                 )
             return (
                 torch.from_numpy(audio),
@@ -572,7 +750,7 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             torch.from_numpy(loudness),
             torch.from_numpy(pluck),
             torch.from_numpy(expression),
-            torch.from_numpy(onset),
+            torch.from_numpy(onset_strength),
             torch.from_numpy(offset),
         )
 
@@ -594,18 +772,21 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
 
         intervals = self._intervals(events)
         pluck, expression, articulation, label_pitch = self._label_tracks(events)
-        onset, offset = self._note_event_tracks(intervals)
+        onset_pulse, offset = self._note_event_tracks(intervals)
+        onset_strength = self._hpss_onset_strength_track(audio, onset_pulse)
         gate, note_age = self._note_shape_tracks(intervals)
+        periodicity = self._periodicity_track(intervals)
         return (
             audio,
             pluck,
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             intervals,
         )
 
@@ -617,10 +798,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             _,
         ) = self._riff(rng)
 
@@ -638,10 +820,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             pluck,
             expression,
             articulation,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
         )
 
     def generate_debug_example(self, idx=0, pitch_source=None):
@@ -652,10 +835,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             intervals,
         ) = self._riff(rng)
         loudness = extract_loudness(
@@ -689,10 +873,11 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             "pluck": pluck,
             "expression": expression,
             "articulation": articulation,
-            "onset": onset,
+            "onset_strength": onset_strength,
             "offset": offset,
             "gate": gate,
             "note_age": note_age,
+            "periodicity": periodicity,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),
@@ -751,18 +936,21 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             dtype=np.int64,
         )
         label_pitch = np.full(self.frames, note.frequency, dtype=np.float32)
-        onset, offset = self._note_event_tracks(intervals)
+        onset_pulse, offset = self._note_event_tracks(intervals)
+        onset_strength = self._hpss_onset_strength_track(audio, onset_pulse)
         gate, note_age = self._note_shape_tracks(intervals)
+        periodicity = self._periodicity_track(intervals)
         return (
             audio,
             pluck,
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             intervals,
         )
 
@@ -774,10 +962,11 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             _,
         ) = self._single_note(rng)
 
@@ -795,10 +984,11 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             pluck,
             expression,
             articulation,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
         )
 
     def generate_debug_example(self, idx=0, pitch_source=None):
@@ -809,10 +999,11 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             expression,
             articulation,
             label_pitch,
-            onset,
+            onset_strength,
             offset,
             gate,
             note_age,
+            periodicity,
             intervals,
         ) = self._single_note(rng)
         loudness = extract_loudness(
@@ -837,10 +1028,11 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             "pluck": pluck,
             "expression": expression,
             "articulation": articulation,
-            "onset": onset,
+            "onset_strength": onset_strength,
             "offset": offset,
             "gate": gate,
             "note_age": note_age,
+            "periodicity": periodicity,
             "intervals": intervals,
             "pluck_labels": list(self.pluck_labels),
             "expression_labels": list(self.expression_labels),

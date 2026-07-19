@@ -14,6 +14,15 @@ Bass-DDSP is a bass-specific synthesis path for IDMT-SMT-BASS. The goal is to so
 
 The model is trained first on isolated labeled notes, then on generated riffs. It uses observed IDMT articulation classes such as `FS_NO`, `PK_NO`, `SP_NO`, and `FS_HA` instead of assuming plucking style and expression style are fully independent.
 
+Current architecture direction:
+
+- Use a GRU recurrent decoder by default, following the original DDSP baseline.
+- Replace additive harmonic sustain with a DWTS-style learned wavetable sustain branch.
+- Treat the transient branch as a style + onset-strength residual, not exact waveform reconstruction.
+- Use `onset_strength(t)` as a continuous `[0, 1]` control measured from HPSS percussive energy.
+- Use `note_decay(t) = exp(-A * note_age(t))` as a causal branch envelope for transient/noise behavior.
+- Keep vocal-driven `loudness(t)` primarily for sustain/performance energy so future bends/slides can stay expressive.
+
 ## Design Constraints
 
 - The Bass-DDSP path must be causal enough for real-time inference.
@@ -58,9 +67,10 @@ Active Bass-DDSP v2 controls:
 | `loudness(t)` | `(B, T, 1)` | deterministic frame loudness | vocal loudness or mapped loudness |
 | `articulation_id(t)` | `(B, T)` | IDMT observed articulation label | scat classifier or deterministic mapper |
 | `gate(t)` | `(B, T, 1)` | note-active interval mask | voice activity / note activity estimate |
-| `onset(t)` | `(B, T, 1)` | note-start event pulse | consonant/onset detector |
+| `onset_strength(t)` | `(B, T, 1)` | HPSS percussive onset strength in `[0, 1]` | consonant/onset strength estimator |
 | `offset(t)` | `(B, T, 1)` | note-end event pulse | release/silence detector at the current frame |
 | `note_age(t)` | `(B, T, 1)` | elapsed seconds since current onset | causal counter reset by onset |
+| `periodicity(t)` | `(B, T, 1)` | articulation prior plus CREPE confidence | harmonicity/tonalness estimate |
 
 Observed articulation classes are used instead of independent plucking and expression factors:
 
@@ -76,20 +86,36 @@ FS_HA
 
 F0-dependent expression subclasses such as `BEQ`, `BES`, `SLD`, `SLU`, `VIF`, and `VIS` are excluded from the articulation control path. Those effects should be represented through `f0(t)` dynamics when they are needed.
 
-Optional future diagnostic/control features:
-
-- `periodicity(t)`: pitch confidence or tonalness.
-- `centroid(t)`: spectral centroid or brightness.
-
-These are not required by the current Bass-DDSP v2 root implementation.
+`centroid(t)` is intentionally excluded from the initial control contract. Brightness should first be produced per branch from the causal controls rather than passed as an extra external feature.
 
 ## Synthesis Branches
 
-- `transient`: DCT-parameterized articulation waveform bank, active over the first few hundred milliseconds of `note_age`.
-- `sustain`: harmonic DDSP branch for pitched string sustain.
+- `transient`: articulation + onset-strength residual, active over the note-decay window rather than only a binary onset frame.
+- `sustain`: DWTS-style wavetable branch for pitched string sustain.
 - `noise`: filtered-noise branch for pluck, fret, and release energy.
 
 Final audio is `transient + sustain + noise`. Reverb is disabled by default for debugging so attack and loudness problems stay visible.
+
+Branch envelopes:
+
+```text
+decay_branch(t) = exp(-A_branch * note_age(t))
+
+transient = transient_raw * gate * onset_strength * decay_transient
+noise     = noise_raw     * gate * onset_strength * decay_noise
+sustain   = wavetable_sustain * gate * loudness_gain(t) * harmonic_gate(periodicity)
+```
+
+`A_branch` is trainable and constrained positive with `softplus`. This gives each branch a causal note lifecycle while keeping loudness free to represent future vocal-driven bends/slides.
+
+`periodicity(t)` becomes the Bass-DDSP adaptation of DDSP-SFX's harmonic indicator:
+
+```text
+H = 1 / (1 + exp(-a * (periodicity - b)))
+harmonic_gate = h_floor + (1 - h_floor) * H
+```
+
+This gate applies to the sustain branch, not to the summed final audio.
 
 Current transient branch design:
 
@@ -105,7 +131,7 @@ sample-accurate note_age
 
 The active configs use `transient_type: dct_bank` with `transient_dct_bank_components: 2048`, giving each observed articulation class a trainable 300 ms attack/residual prototype.
 
-The transient branch uses branch-specific onset high-pass/log-RMS loss, but it is not exclusively pretrained. Exclusive transient-only warmup broke sustain training in the `0410`-era runs because the harmonic path was left unconstrained.
+The transient branch is trained through final reconstruction loss for now. HPSS is used for onset-strength extraction and branch diagnostics; high-pass transient-specific losses are removed from the default objective until the new decomposition is stable.
 
 ## Riff Generation
 
@@ -117,7 +143,7 @@ The dataset constructs each riff by:
 2. trimming leading and trailing silence with amplitude/envelope gating,
 3. placing notes into one monophonic timeline,
 4. joining adjacent notes with short equal-power overlap-add crossfades,
-5. emitting frame labels for `articulation_id`, `gate`, `onset`, `offset`, and `note_age`.
+5. emitting frame labels for `articulation_id`, `gate`, `onset_strength`, `offset`, `note_age`, and `periodicity`.
 
 The audio is naturally connected in the target because adjacent notes are crossfaded instead of separated by the original file silence. The synthesized audio is connected because harmonic phase is accumulated through the whole frame sequence rather than reset at every frame.
 
@@ -144,9 +170,9 @@ Short single-note smoke test:
 ```bash
 python -m bass_ddsp.train \
   --config configs/bass_ddsp_v2_single_note.yaml \
-  --run-name bass_ddsp_v2_single_note_smoke_$(date +%Y%m%d_%H%M%S) \
+  --name bass_ddsp_v2_single_note_smoke_$(date +%Y%m%d_%H%M%S) \
   --steps 1000 \
-  --batch-size 4 \
+  --batch 4 \
   --device cuda:0
 ```
 
@@ -155,6 +181,20 @@ Branch-level diagnostics from a completed run:
 ```bash
 python -m bass_ddsp.export_branch_debug \
   --run runs/<run_name> \
-  --count 3 \
+  --num-samples 3 \
   --seed 4321
+```
+
+Bend/slide diagnostics from a completed run:
+
+```bash
+python -m bass_ddsp.synthesize_bend_slide \
+  --run runs/<run_name> \
+  --device cuda:0
+```
+
+Long detached W&B-tracked training:
+
+```bash
+SESSION=bass_ddsp_v2_long DEVICE=cuda:0 ./scripts/start_bass_ddsp_v2_long_tmux.sh
 ```

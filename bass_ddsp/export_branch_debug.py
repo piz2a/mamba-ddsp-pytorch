@@ -64,10 +64,11 @@ def reconstruct(model, config, data, device):
     loudness = loudness.to(device)
     kwargs = {
         "articulation": torch.from_numpy(data["articulation"]).long().unsqueeze(0).to(device),
-        "onset": torch.from_numpy(data["onset"]).float().unsqueeze(0).unsqueeze(-1).to(device),
+        "onset_strength": torch.from_numpy(data["onset_strength"]).float().unsqueeze(0).unsqueeze(-1).to(device),
         "offset": torch.from_numpy(data["offset"]).float().unsqueeze(0).unsqueeze(-1).to(device),
         "gate": torch.from_numpy(data["gate"]).float().unsqueeze(0).unsqueeze(-1).to(device),
         "note_age": torch.from_numpy(data["note_age"]).float().unsqueeze(0).unsqueeze(-1).to(device),
+        "periodicity": torch.from_numpy(data["periodicity"]).float().unsqueeze(0).unsqueeze(-1).to(device),
     }
     with torch.no_grad():
         signal = model(pitch, loudness, **kwargs)
@@ -97,6 +98,35 @@ def reconstruct(model, config, data, device):
         branches["_harmonic_age_envelope"] = (
             model.last_harmonic_age_envelope
             .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_sustain_attention", None) is not None:
+        branches["_sustain_attention"] = (
+            model.last_sustain_attention
+            .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_sustain_loudness_gain", None) is not None:
+        branches["_sustain_loudness_gain"] = (
+            model.last_sustain_loudness_gain
+            .squeeze(0)
+            .squeeze(-1)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_sustain_harmonic_gate", None) is not None:
+        branches["_sustain_harmonic_gate"] = (
+            model.last_sustain_harmonic_gate
+            .squeeze(0)
+            .squeeze(-1)
             .detach()
             .cpu()
             .numpy()
@@ -197,6 +227,18 @@ def write_sample(out_dir, sample_name, data, branches):
             "Deterministic note-age harmonic envelope",
             "envelope index",
         )
+    if "_sustain_attention" in branches:
+        write_matrix_plot(
+            sample_dir,
+            "sustain_attention",
+            branches["_sustain_attention"],
+            "DWTS wavetable attention",
+            "wavetable index",
+        )
+    if "_sustain_loudness_gain" in branches:
+        np.save(sample_dir / "sustain_loudness_gain.npy", branches["_sustain_loudness_gain"])
+    if "_sustain_harmonic_gate" in branches:
+        np.save(sample_dir / "sustain_harmonic_gate.npy", branches["_sustain_harmonic_gate"])
     return {"sample": sample_name, "metrics": rows, "intervals": data["intervals"]}
 
 
