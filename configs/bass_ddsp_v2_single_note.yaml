@@ -60,10 +60,28 @@ model:
   use_sustain_branch: true
   use_noise_branch: true
   use_reverb: false
-  transient_seconds: 0.20
+  transient_seconds: 0.30
+  transient_type: dct_bank
+  transient_dct_components: 8
+  transient_dct_bank_components: 2048
+  transient_dct_min_cycles: 0.5
+  transient_dct_max_cycles: 64.0
+  transient_dct_amplitude_scale: 1.0
+  transient_dct_amplitude_floor: 0.05
+  transient_dct_gain_floor: 0.05
+  transient_dct_taper_strength: 0.0
+  transient_dct_normalize_coefficients: true
+  use_harmonic_age_modulation: true
+  harmonic_age_hidden_size: 32
+  harmonic_age_modulation_scale: 1.0
+  use_harmonic_age_envelope: true
+  harmonic_age_total_decay_seconds: 1.2
+  harmonic_age_low_decay_seconds: 1.4
+  harmonic_age_high_decay_seconds: 0.35
+  harmonic_age_envelope_floor: 0.05
   sustain_gain_db: 0.0
-  noise_gain_db: 6.0
-  transient_gain_db: 18.0
+  noise_gain_db: 0.0
+  transient_gain_db: 0.0
   learnable_branch_gains: false
 
 train:
@@ -74,6 +92,8 @@ train:
   grad_clip_norm: 1.0
   rms_loss_weight: 1.0
   onset_loss_weight: 0.35
-  onset_loss_seconds: 0.15
+  onset_loss_seconds: 0.30
   transient_loss_weight: 2.0
+  transient_branch_loss_weight: 2.0
+  transient_branch_pretrain_steps: 0
   eval_every_epochs: 1

@@ -23,6 +23,10 @@ def frame_log_rms(signal, block_size):
     return torch.log(rms + 1e-7)
 
 
+def masked_mean(value, mask):
+    return (value * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def multiscale_spectral_loss(target, reconstruction, scales, overlap):
     target_stft = multiscale_fft(target, scales, overlap)
     reconstruction_stft = multiscale_fft(reconstruction, scales, overlap)
@@ -65,7 +69,42 @@ def highpass_transient_loss(target, reconstruction, frame_mask, block_size):
 
     target_hp = target[:, 1:] - target[:, :-1]
     reconstruction_hp = reconstruction[:, 1:] - reconstruction[:, :-1]
-    return ((target_hp - reconstruction_hp).abs() * audio_mask[:, 1:]).mean()
+    mask = audio_mask[:, 1:]
+    return ((target_hp - reconstruction_hp).abs() * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def normalized_highpass_transient_loss(target, reconstruction, frame_mask, block_size):
+    audio_mask = frame_mask_to_audio(frame_mask, block_size, target.shape[-1])
+    if audio_mask is None or not torch.any(audio_mask > 0):
+        return torch.tensor(0.0, device=target.device)
+
+    target_hp = target[:, 1:] - target[:, :-1]
+    reconstruction_hp = reconstruction[:, 1:] - reconstruction[:, :-1]
+    mask = audio_mask[:, 1:]
+    diff = ((target_hp - reconstruction_hp).abs() * mask).sum()
+    reference = (target_hp.abs() * mask).sum().clamp_min(1e-5)
+    return diff / reference
+
+
+def highpass_onset_log_rms_loss(target, reconstruction, frame_mask, block_size):
+    if frame_mask is None or not torch.any(frame_mask > 0):
+        return torch.tensor(0.0, device=target.device)
+
+    target_hp = torch.nn.functional.pad(target[:, 1:] - target[:, :-1], (0, 1))
+    reconstruction_hp = torch.nn.functional.pad(
+        reconstruction[:, 1:] - reconstruction[:, :-1],
+        (0, 1),
+    )
+    target_log_rms = frame_log_rms(target_hp, block_size)
+    reconstruction_log_rms = frame_log_rms(reconstruction_hp, block_size)
+    frame_count = min(
+        target_log_rms.shape[1],
+        reconstruction_log_rms.shape[1],
+        frame_mask.shape[1],
+    )
+    value = (target_log_rms[:, :frame_count] - reconstruction_log_rms[:, :frame_count]).abs()
+    mask = frame_mask[:, :frame_count]
+    return masked_mean(value, mask)
 
 
 def branch_rms(model, name, device):
@@ -87,6 +126,7 @@ def parse_args():
     parser.add_argument("--decay-over", type=int, default=400000)
     parser.add_argument("--device")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--init-state", help="Optional checkpoint to load before training.")
     return parser.parse_args()
 
 
@@ -171,6 +211,9 @@ def main():
     config["data"]["articulation_labels"] = list(dataset.articulation_labels)
 
     model = BassDDSPV2(**config["model"]).to(device)
+    if args.init_state:
+        state = torch.load(args.init_state, map_location=device)
+        model.load_state_dict(state)
     dataloader = torch.utils.data.DataLoader(
         dataset,
         args.batch,
@@ -218,6 +261,7 @@ def main():
         "rms_loss",
         "onset_spectral_loss",
         "transient_loss",
+        "transient_branch_loss",
         "target_rms",
         "reconstruction_rms",
         "transient_branch_rms",
@@ -266,10 +310,14 @@ def main():
 
             onset_loss_weight = float(config["train"].get("onset_loss_weight", 0.0))
             transient_loss_weight = float(config["train"].get("transient_loss_weight", 0.0))
+            transient_branch_loss_weight = float(
+                config["train"].get("transient_branch_loss_weight", 0.0)
+            )
             onset_spectral_loss = torch.tensor(0.0, device=device)
             transient_loss = torch.tensor(0.0, device=device)
+            transient_branch_loss = torch.tensor(0.0, device=device)
             onset_mask = None
-            if onset_loss_weight or transient_loss_weight:
+            if onset_loss_weight or transient_loss_weight or transient_branch_loss_weight:
                 onset_mask = onset_frame_mask(
                     batch["onset"],
                     float(config["train"].get("onset_loss_seconds", 0.15)),
@@ -295,13 +343,34 @@ def main():
                     onset_mask,
                     config["preprocess"]["block_size"],
                 )
+            if transient_branch_loss_weight and onset_mask is not None:
+                transient_branch = model.last_branch_outputs.get("transient")
+                if transient_branch is not None:
+                    transient_branch_loss = normalized_highpass_transient_loss(
+                        target,
+                        transient_branch.squeeze(-1),
+                        onset_mask,
+                        config["preprocess"]["block_size"],
+                    )
+                    transient_branch_loss = transient_branch_loss + highpass_onset_log_rms_loss(
+                        target,
+                        transient_branch.squeeze(-1),
+                        onset_mask,
+                        config["preprocess"]["block_size"],
+                    )
 
             loss = (
                 spectral_loss
                 + rms_loss_weight * rms_loss
                 + onset_loss_weight * onset_spectral_loss
                 + transient_loss_weight * transient_loss
+                + transient_branch_loss_weight * transient_branch_loss
             )
+            transient_branch_pretrain_steps = int(
+                config["train"].get("transient_branch_pretrain_steps", 0)
+            )
+            if step < transient_branch_pretrain_steps:
+                loss = loss + transient_branch_loss_weight * transient_branch_loss
 
             lr = set_lr(opt, args.start_lr, args.stop_lr, args.decay_over, step)
             opt.zero_grad()
@@ -324,6 +393,7 @@ def main():
                 "rms_loss": rms_loss.item(),
                 "onset_spectral_loss": onset_spectral_loss.item(),
                 "transient_loss": transient_loss.item(),
+                "transient_branch_loss": transient_branch_loss.item(),
                 "target_rms": target_rms.item(),
                 "reconstruction_rms": reconstruction_rms.item(),
                 "transient_branch_rms": transient_branch_rms.item(),
@@ -341,6 +411,7 @@ def main():
                 metrics["rms_loss"],
                 metrics["onset_spectral_loss"],
                 metrics["transient_loss"],
+                metrics["transient_branch_loss"],
                 metrics["target_rms"],
                 metrics["reconstruction_rms"],
                 metrics["transient_branch_rms"],

@@ -8,6 +8,10 @@ import numpy as np
 import soundfile as sf
 import torch
 import yaml
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
 from bass_ddsp.model import BassDDSPV2
@@ -71,11 +75,55 @@ def reconstruct(model, config, data, device):
     branches = {}
     for name, tensor in model.last_branch_outputs.items():
         branches[name] = tensor.squeeze(0).squeeze(-1).detach().cpu().numpy().astype(np.float32)
+    if getattr(model, "last_harmonic_frame_amplitudes", None) is not None:
+        branches["_harmonic_frame_amplitudes"] = (
+            model.last_harmonic_frame_amplitudes
+            .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_harmonic_age_multiplier", None) is not None:
+        branches["_harmonic_age_multiplier"] = (
+            model.last_harmonic_age_multiplier
+            .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_harmonic_age_envelope", None) is not None:
+        branches["_harmonic_age_envelope"] = (
+            model.last_harmonic_age_envelope
+            .squeeze(0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
     branches.setdefault(
         "signal",
         signal.squeeze(0).squeeze(-1).detach().cpu().numpy().astype(np.float32),
     )
     return branches
+
+
+def write_matrix_plot(sample_dir, filename, matrix, title, ylabel):
+    np.save(sample_dir / f"{filename}.npy", matrix)
+    fig, ax = plt.subplots(figsize=(11, 4), constrained_layout=True)
+    image = ax.imshow(
+        matrix.T,
+        origin="lower",
+        aspect="auto",
+        interpolation="nearest",
+    )
+    ax.set_title(title)
+    ax.set_xlabel("frame")
+    ax.set_ylabel(ylabel)
+    fig.colorbar(image, ax=ax)
+    fig.savefig(sample_dir / f"{filename}.png", dpi=150)
+    plt.close(fig)
 
 
 def write_sample(out_dir, sample_name, data, branches):
@@ -125,6 +173,30 @@ def write_sample(out_dir, sample_name, data, branches):
         writer.writerows(rows)
     with open(sample_dir / "intervals.json", "w") as handle:
         json.dump(data["intervals"], handle, indent=2)
+    if "_harmonic_frame_amplitudes" in branches:
+        write_matrix_plot(
+            sample_dir,
+            "harmonic_frame_amplitudes",
+            branches["_harmonic_frame_amplitudes"],
+            "Harmonic frame amplitudes",
+            "harmonic index",
+        )
+    if "_harmonic_age_multiplier" in branches:
+        write_matrix_plot(
+            sample_dir,
+            "harmonic_age_multiplier",
+            branches["_harmonic_age_multiplier"],
+            "Note-age harmonic multipliers",
+            "multiplier index",
+        )
+    if "_harmonic_age_envelope" in branches:
+        write_matrix_plot(
+            sample_dir,
+            "harmonic_age_envelope",
+            branches["_harmonic_age_envelope"],
+            "Deterministic note-age harmonic envelope",
+            "envelope index",
+        )
     return {"sample": sample_name, "metrics": rows, "intervals": data["intervals"]}
 
 
