@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
-from bass_ddsp.model import BassDDSPV2
+from bass_ddsp.train import make_model
 
 
 def make_dataset(config, seed, pitch_source):
@@ -39,8 +39,9 @@ def make_dataset(config, seed, pitch_source):
 
 def load_model(config, run_dir, dataset, device):
     model_config = dict(config["model"])
-    model_config["n_articulation"] = dataset.n_articulation
-    model = BassDDSPV2(**model_config).to(device)
+    if model_config.get("model_type", "bass_ddsp_v2") == "bass_ddsp_v2":
+        model_config["n_articulation"] = dataset.n_articulation
+    model = make_model({"model": model_config}).to(device)
     state = torch.load(run_dir / "state.pth", map_location=device)
     model.load_state_dict(state)
     model.eval()

@@ -1,0 +1,72 @@
+data:
+  dataset: idmt_bass_note
+  data_location: /disk1/ahnjiho/IDMT-SMT-BASS
+  extension: "wav"
+
+preprocess:
+  sampling_rate: &samplingrate 16000
+  signal_length: &signallength 32000
+  block_size: &blocksize 256
+
+idmt_bass:
+  examples_per_epoch: 512
+  min_note_seconds: 0.35
+  max_note_seconds: 1.35
+  min_crossfade_seconds: 0.040
+  max_crossfade_seconds: 0.090
+  trim_top_db: 35.0
+  trim_onset_top_db: 25.0
+  trim_noise_percentile: 20.0
+  trim_noise_margin_db: 12.0
+  trim_frame_size: 512
+  trim_hop_size: 128
+  trim_pad_seconds: 0.012
+  edge_fade_seconds: 0.004
+  release_fade_seconds: 0.035
+  event_width_seconds: 0.032
+  hpss_margin: 8.0
+  periodicity_use_crepe_confidence: true
+  periodicity_crepe_model: tiny
+  periodicity_crepe_device: cpu
+  periodicity_crepe_mix: 0.35
+  periodicity_mu_prior: 0.25
+  periodicity_dn_prior: 0.45
+  include_expression_styles: ["NO", "DN"]
+  include_string_numbers: [1, 2, 3, 4]
+  deduplicate: true
+  cache_size: 512
+  pitch_source: labels
+  pitch_fmin: 30.0
+  pitch_fmax: 330.0
+  peak_normalize: true
+  label_mode: observed_articulation
+  use_note_shape_controls: true
+  note_age_clip_seconds: 1.0
+  seed:
+
+model:
+  model_type: vanilla_ddsp
+  hidden_size: 256
+  n_harmonic: 100
+  n_bands: 65
+  sampling_rate: *samplingrate
+  block_size: *blocksize
+  recurrent_type: gru
+  scale_f0_input: true
+  f0_min_hz: 30.0
+  f0_max_hz: 330.0
+  pitch_hidden_size: 64
+  loudness_hidden_size: 64
+  sustain_gain_db: 12.0
+  noise_gain_db: 0.0
+  transient_gain_db: 0.0
+  learnable_branch_gains: true
+
+train:
+  scales: [4096, 2048, 1024, 512, 256, 128]
+  overlap: .75
+  loudness_stats_batches: 8
+  num_workers: 0
+  grad_clip_norm: 1.0
+  rms_loss_weight: 1.0
+  eval_every_epochs: 1

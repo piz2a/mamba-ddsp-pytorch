@@ -10,6 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import yaml
 
+from bass_ddsp.baselines import VanillaDDSP
 from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
 from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
@@ -100,6 +101,19 @@ def make_dataset(config):
     )
 
 
+def make_model(config):
+    model_config = dict(config["model"])
+    model_type = str(model_config.pop("model_type", "bass_ddsp_v2"))
+    if model_type == "bass_ddsp_v2":
+        return BassDDSPV2(**model_config)
+    if model_type == "vanilla_ddsp":
+        return VanillaDDSP(**model_config)
+    raise ValueError(
+        "model.model_type must be 'bass_ddsp_v2' or 'vanilla_ddsp', "
+        f"got {model_type!r}"
+    )
+
+
 def set_lr(opt, start_lr, stop_lr, decay_over, step):
     if decay_over <= 0:
         lr = stop_lr
@@ -156,12 +170,13 @@ def main():
     if len(dataset) < args.batch:
         raise ValueError(f"dataset length {len(dataset)} is smaller than batch {args.batch}")
 
-    config["model"]["n_articulation"] = dataset.n_articulation
+    if config["model"].get("model_type", "bass_ddsp_v2") == "bass_ddsp_v2":
+        config["model"]["n_articulation"] = dataset.n_articulation
     config["data"]["pluck_labels"] = list(dataset.pluck_labels)
     config["data"]["expression_labels"] = list(dataset.expression_labels)
     config["data"]["articulation_labels"] = list(dataset.articulation_labels)
 
-    model = BassDDSPV2(**config["model"]).to(device)
+    model = make_model(config).to(device)
     if args.init_state:
         state = torch.load(args.init_state, map_location=device)
         model.load_state_dict(state)
