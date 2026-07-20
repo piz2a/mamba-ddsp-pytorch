@@ -15,6 +15,14 @@ from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
 
 
+def frame_log_rms(signal, block_size):
+    usable = signal.shape[-1] - (signal.shape[-1] % block_size)
+    signal = signal[..., :usable]
+    frames = signal.reshape(signal.shape[0], -1, block_size)
+    rms = torch.sqrt(torch.mean(frames * frames, dim=-1) + 1e-7)
+    return torch.log(rms + 1e-7)
+
+
 def multiscale_spectral_loss(target, reconstruction, scales, overlap):
     target_stft = multiscale_fft(target, scales, overlap)
     reconstruction_stft = multiscale_fft(reconstruction, scales, overlap)
@@ -246,10 +254,17 @@ def main():
                 config["train"]["overlap"],
             )
             rms_loss = torch.tensor(0.0, device=device)
+            rms_loss_weight = float(config["train"].get("rms_loss_weight", 0.0))
+            if rms_loss_weight > 0.0:
+                block_size = config["preprocess"]["block_size"]
+                rms_loss = (
+                    frame_log_rms(target, block_size)
+                    - frame_log_rms(y, block_size)
+                ).abs().mean()
             onset_spectral_loss = torch.tensor(0.0, device=device)
             transient_loss = torch.tensor(0.0, device=device)
             transient_branch_loss = torch.tensor(0.0, device=device)
-            loss = spectral_loss
+            loss = spectral_loss + rms_loss_weight * rms_loss
 
             lr = set_lr(opt, args.start_lr, args.stop_lr, args.decay_over, step)
             opt.zero_grad()

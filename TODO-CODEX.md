@@ -46,5 +46,6 @@
 - [ ] Add a deterministic held-out validation split for IDMT notes/riffs instead of using only smoke-train diagnostics.
 - [ ] Tune `harmonic_indicator_a`, `harmonic_indicator_b`, and `harmonic_gate_floor` from longer run metrics.
 - [ ] Revisit HPSS branch-specific losses after the simplified MSS baseline has a clean W&B run.
-- [ ] Investigate reconstruction loudness after longer training. The 100-step sanity run still has signal/target RMS around `0.11-0.24` on three debug samples.
+- [ ] Investigate reconstruction loudness after longer training. The gain/RMS 100-step sanity run improved signal/target RMS to about `0.70` on three debug samples, but target matching is still incomplete.
 - [ ] Reintroduce `HA` only after implementing reliable sounding-F0 extraction or harmonic-specific label correction for IDMT harmonic notes.
+- [ ] If DWTS sustain remains weaker than the old additive sustain after the gain/RMS fix, run an ablation that restores additive sustain as the baseline and keeps DWTS as an optional experiment.

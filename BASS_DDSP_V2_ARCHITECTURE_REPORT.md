@@ -226,15 +226,17 @@ This is not exact RMS matching. It is deterministic gain conditioning so the mod
 
 ## Loss Function
 
-The current training loss is intentionally simplified:
+The current training loss is:
 
 ```text
-loss = multi_scale_stft_loss(target_audio, reconstructed_audio)
+loss =
+  multi_scale_stft_loss(target_audio, reconstructed_audio)
+  + rms_loss_weight * log_frame_rms_loss(target_audio, reconstructed_audio)
 ```
 
-The old log-RMS, onset-weighted, high-pass transient, and direct transient-branch auxiliary terms have been removed from the active optimization path. They are not used by default configs.
+The log-frame-RMS term was restored after the DWTS sustain branch showed a persistent low-volume bias under MSS-only training. This is a final-audio energy loss, not a branch-specific transient loss.
 
-This means branch specialization is not guaranteed by the loss. Branch diagnostics are required after training.
+The old onset-weighted, high-pass transient, and direct transient-branch auxiliary terms remain removed from the active optimization path. Branch specialization is still not guaranteed by the loss, so branch diagnostics are required after training.
 
 ## Diagnostics
 
@@ -275,26 +277,39 @@ Bend/slide synthesis writes one-note test cases:
 Current code was smoke-tested with:
 
 ```text
-runs/bass_ddsp_v2_dwts_100step_20260719_164834
+runs/bass_ddsp_v2_noha_gain_rms_100step_20260720_020428
 ```
 
-It trained 100 single-note steps on `cuda:7` and produced finite outputs.
+It trained 100 HA-free single-note steps on `cuda:7` and produced finite outputs.
 
 Observed branch metrics on 3 random debug samples:
 
 | Sample | Signal/Target RMS | Sustain vs Signal | Transient vs Signal | Noise vs Signal |
 |---|---:|---:|---:|---:|
-| `sample_00_idx_0276` | `0.243` | `99.31%` | `12.09%` | `0.35%` |
-| `sample_01_idx_0029` | `0.114` | `99.94%` | `2.57%` | `0.15%` |
-| `sample_02_idx_0171` | `0.230` | `99.18%` | `10.08%` | `0.27%` |
+| `sample_00_idx_0276` | `0.703` | `99.95%` | `1.28%` | `0.004%` |
+| `sample_01_idx_0029` | `0.709` | `99.97%` | `1.41%` | `0.003%` |
+| `sample_02_idx_0171` | `0.703` | `99.89%` | `1.45%` | `0.004%` |
 
 Interpretation:
 
-- The DWTS sustain branch is connected and learning; it is not silent.
-- The reconstruction remains too quiet after 100 steps.
+- The DWTS sustain branch is connected and no longer severely under-scaled after the gain/RMS fix.
+- Reconstruction loudness is still below target after 100 steps, but the scale is much closer than the previous `0.11-0.24` signal/target RMS range.
 - Sustain dominates the summed signal, so branch balance is still weak.
-- The transient branch produces measurable energy but is still mostly an onset residual.
+- The transient and noise branches are now very small relative to sustain and need separate attention after sustain/loudness is stable.
 - Longer training is required before judging audio quality.
+
+## Current Gain Staging
+
+The active configs initialize sustain gain at `+12 dB` and make branch gains trainable:
+
+```yaml
+sustain_gain_db: 12.0
+noise_gain_db: 0.0
+transient_gain_db: 0.0
+learnable_branch_gains: true
+```
+
+This is a gain-calibration fix for the DWTS sustain path. The previous additive sustain branch had a direct total-amplitude parameter and was less prone to starting extremely quiet. DWTS sustain has several multiplicative attenuators: learned amplitude, wavetable attention, gate, fade-in, deterministic loudness gain, and harmonic gate.
 
 ## Current Training Scripts
 
@@ -345,6 +360,6 @@ The next technical issue is not branch connectivity. It is loudness/energy calib
 Recommended next experiments:
 
 1. Run a longer single-note stage with W&B enabled and inspect `signal/target RMS`, `sustain_attention`, and transient bank plots.
-2. If the model stays quiet, increase deterministic loudness authority by raising `loudness_gain_db_per_std` or the learned sustain amplitude initialization.
+2. If the model stays quiet, inspect whether `sustain_gain_db` is learning upward/downward and whether `loudness_gain` is clipping.
 3. If sustain keeps absorbing attack energy, reintroduce HPSS-derived branch supervision in a controlled way after the simplified baseline is measured.
 4. Only start riff training after isolated notes have believable attack and decay.

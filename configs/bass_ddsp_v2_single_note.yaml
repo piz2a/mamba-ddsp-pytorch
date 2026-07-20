@@ -92,10 +92,10 @@ model:
   transient_dct_gain_floor: 0.05
   transient_dct_taper_strength: 0.0
   transient_dct_normalize_coefficients: true
-  sustain_gain_db: 0.0
+  sustain_gain_db: 12.0
   noise_gain_db: 0.0
   transient_gain_db: 0.0
-  learnable_branch_gains: false
+  learnable_branch_gains: true
 
 train:
   scales: [4096, 2048, 1024, 512, 256, 128]
@@ -103,4 +103,5 @@ train:
   loudness_stats_batches: 8
   num_workers: 0
   grad_clip_norm: 1.0
+  rms_loss_weight: 1.0
   eval_every_epochs: 1
