@@ -47,3 +47,4 @@
 - [ ] Tune `harmonic_indicator_a`, `harmonic_indicator_b`, and `harmonic_gate_floor` from longer run metrics.
 - [ ] Revisit HPSS branch-specific losses after the simplified MSS baseline has a clean W&B run.
 - [ ] Investigate reconstruction loudness after longer training. The 100-step sanity run still has signal/target RMS around `0.11-0.24` on three debug samples.
+- [ ] Reintroduce `HA` only after implementing reliable sounding-F0 extraction or harmonic-specific label correction for IDMT harmonic notes.

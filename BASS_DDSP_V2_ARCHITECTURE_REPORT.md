@@ -59,8 +59,10 @@ BEQ, BES, SLD, SLU, VIF, VIS
 The active articulation labels are observed combinations such as:
 
 ```text
-FS_NO, MU_NO, PK_NO, SP_NO, ST_NO, FS_DN, FS_HA
+FS_NO, MU_NO, PK_NO, SP_NO, ST_NO, FS_DN
 ```
+
+`FS_HA` is intentionally excluded from the active baseline because IDMT harmonic notes can sound at a partial above the filename-derived fretted fundamental. Using the normal string/fret label as F0 for `HA` gives the oscillator contradictory conditioning.
 
 ## HPSS And Periodicity
 

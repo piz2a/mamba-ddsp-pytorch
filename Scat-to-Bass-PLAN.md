@@ -12,7 +12,7 @@ The current implementation focus is the Bass-DDSP synthesizer. The scat encoder 
 
 Bass-DDSP is a bass-specific synthesis path for IDMT-SMT-BASS. The goal is to solve the smooth, violin-like behavior of the baseline DDSP model before connecting the later scat-to-bass encoder.
 
-The model is trained first on isolated labeled notes, then on generated riffs. It uses observed IDMT articulation classes such as `FS_NO`, `PK_NO`, `SP_NO`, and `FS_HA` instead of assuming plucking style and expression style are fully independent.
+The model is trained first on isolated labeled notes, then on generated riffs. It uses observed IDMT articulation classes such as `FS_NO`, `PK_NO`, `SP_NO`, and `FS_DN` instead of assuming plucking style and expression style are fully independent.
 
 Current architecture direction:
 
@@ -81,10 +81,9 @@ PK_NO
 SP_NO
 ST_NO
 FS_DN
-FS_HA
 ```
 
-F0-dependent expression subclasses such as `BEQ`, `BES`, `SLD`, `SLU`, `VIF`, and `VIS` are excluded from the articulation control path. Those effects should be represented through `f0(t)` dynamics when they are needed.
+F0-dependent expression subclasses such as `BEQ`, `BES`, `SLD`, `SLU`, `VIF`, and `VIS` are excluded from the articulation control path. Those effects should be represented through `f0(t)` dynamics when they are needed. `HA` is also excluded from the baseline experiment because harmonic notes often sound at a partial above the filename-derived fretted fundamental, which makes label-F0 conditioning unreliable.
 
 `centroid(t)` is intentionally excluded from the initial control contract. Brightness should first be produced per branch from the causal controls rather than passed as an extra external feature.
 

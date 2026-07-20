@@ -31,7 +31,7 @@ idmt_bass:
   periodicity_crepe_mix: 0.35
   periodicity_mu_prior: 0.25
   periodicity_dn_prior: 0.45
-  include_expression_styles: ["NO", "DN", "HA"]
+  include_expression_styles: ["NO", "DN"]
   include_string_numbers: [1, 2, 3, 4]
   deduplicate: true
   cache_size: 512
