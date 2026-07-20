@@ -258,6 +258,16 @@ Branch export writes:
 - `sustain_harmonic_gate.npy`
 - `branch_metrics.csv`
 
+Aligned control visualization writes one figure per sample:
+
+- waveform target/reconstruction overlay
+- target and reconstruction STFT spectrograms
+- `f0(t)` / label pitch
+- raw and normalized `loudness(t)`
+- `onset_strength`, `gate`, `offset`, `periodicity`
+- `note_age` and sustain loudness gain
+- articulation intervals
+
 Transient-style visualization writes:
 
 - `raw_waveform_bank.png`
@@ -329,6 +339,17 @@ Diagnostics from a trained run:
 
 ```bash
 cd /workspace && ./scripts/infer_bass_ddsp_v2_debug.sh runs/<run_name> cuda:7
+```
+
+Only aligned control plots:
+
+```bash
+python -m bass_ddsp.visualize_debug_controls \
+  --run runs/<run_name> \
+  --out-dir runs/<run_name>/control_debug_random3_label_pitch \
+  --num-samples 3 \
+  --pitch-source labels \
+  --device cuda:7
 ```
 
 ## Current Blocker

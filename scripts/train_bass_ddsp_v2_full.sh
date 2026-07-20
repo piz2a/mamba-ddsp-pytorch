@@ -70,6 +70,14 @@ python -m bass_ddsp.export_branch_debug \
   --pitch-source labels \
   --device "${DEVICE}"
 
+python -m bass_ddsp.visualize_debug_controls \
+  --run "runs/${RIFF_RUN}" \
+  --out-dir "runs/${RIFF_RUN}/control_debug_random3_label_pitch" \
+  --seed 98765 \
+  --num-samples 3 \
+  --pitch-source labels \
+  --device "${DEVICE}"
+
 python -m bass_ddsp.synthesize_bend_slide \
   --run "runs/${RIFF_RUN}" \
   --out-dir "runs/${RIFF_RUN}/bend_slide_debug" \
@@ -79,4 +87,5 @@ echo "Done."
 echo "Single-note run: /workspace/runs/${SINGLE_RUN}"
 echo "Riff run:        /workspace/runs/${RIFF_RUN}"
 echo "Branch debug:    /workspace/runs/${RIFF_RUN}/branch_debug_random3_label_pitch"
+echo "Control debug:   /workspace/runs/${RIFF_RUN}/control_debug_random3_label_pitch"
 echo "Bend/slide debug:/workspace/runs/${RIFF_RUN}/bend_slide_debug"

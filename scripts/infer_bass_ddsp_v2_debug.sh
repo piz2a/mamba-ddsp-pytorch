@@ -21,6 +21,14 @@ python -m bass_ddsp.export_branch_debug \
   --pitch-source labels \
   --device "${DEVICE}"
 
+python -m bass_ddsp.visualize_debug_controls \
+  --run "${RUN}" \
+  --out-dir "${OUT_ROOT}/control_plots" \
+  --seed "${SEED:-98765}" \
+  --num-samples "${NUM_SAMPLES:-3}" \
+  --pitch-source labels \
+  --device "${DEVICE}"
+
 python -m bass_ddsp.visualize_transient_styles \
   --run "${RUN}" \
   --out-dir "${OUT_ROOT}/transient_styles" \
