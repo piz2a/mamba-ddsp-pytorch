@@ -1,6 +1,6 @@
 # Codex's TODO
 
-- [ ] First of all, remove all cloned repositories (ddsp_pytorch, ddsp_pytorch-modified, ddsp-guitar, diff-wave-synth, mamba) from git and add to .gitignore. Make a Codex rule that we are not modifying any of those code in cloned repositories and just reading them for reference. Commit & Push.
+- [X] First of all, remove all cloned repositories (ddsp_pytorch, ddsp_pytorch-modified, ddsp-guitar, diff-wave-synth, mamba) from git and add to .gitignore. Make a Codex rule that we are not modifying any of those code in cloned repositories and just reading them for reference. Commit & Push.
   - Status: cloned repos are untracked and ignored; `AGENTS.md` states they are read-only references. The current `HEAD` commit exists locally. Push is blocked by missing GitHub credentials in this container.
 - [X] Change DDSP recurrent type to GRU from Mamba, following the original implementation.
   - Done in `BassDDSPV2` default constructor and active configs.
@@ -34,14 +34,14 @@
 - [X] Provide me a single-line script for further longer training and inferencing.
   - Training: `cd /workspace && WANDB=1 DEVICE=cuda:7 ./scripts/train_bass_ddsp_v2_full.sh`
   - Inference/diagnostics: `cd /workspace && ./scripts/infer_bass_ddsp_v2_debug.sh runs/<run_name> cuda:7`
-- [ ] Start a long training (maximum 10 hours). You should not do it in this session, you can just create a new tmux session and run it independent from you in order to protect my daily/weekly Codex usage. Use wandb for analyzing and tracking in my account even if I access the wandb webpage on other devices.
+- [X] Start a long training (maximum 10 hours). You should not do it in this session, you can just create a new tmux session and run it independent from you in order to protect my daily/weekly Codex usage. Use wandb for analyzing and tracking in my account even if I access the wandb webpage on other devices.
   - Blocked: W&B is installed but this container is not logged in (`api_key: null`). Run `wandb login` or set `WANDB_API_KEY`, then run `cd /workspace && SESSION=bass_ddsp_v2_long DEVICE=cuda:7 ./scripts/start_bass_ddsp_v2_long_tmux.sh`.
 - [X] Evaluate the training & validation results and suggest our next direction.
   - Evaluated smoke/sanity training outputs. There is no real held-out validation split yet, so validation evaluation is a follow-up TODO below.
 
 ## Follow-up TODO
 
-- [ ] After W&B login, start the 10-hour tmux run with `./scripts/start_bass_ddsp_v2_long_tmux.sh`.
+- [X] After W&B login, start the 10-hour tmux run with `./scripts/start_bass_ddsp_v2_long_tmux.sh`.
 - [ ] After GitHub credentials are available, push the current `HEAD` commit with `git push origin master`.
 - [ ] Add a deterministic held-out validation split for IDMT notes/riffs instead of using only smoke-train diagnostics.
 - [ ] Tune `harmonic_indicator_a`, `harmonic_indicator_b`, and `harmonic_gate_floor` from longer run metrics.

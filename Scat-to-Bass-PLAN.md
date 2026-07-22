@@ -153,6 +153,52 @@ The audio is naturally connected in the target because adjacent notes are crossf
 3. Train the scat/vocal classifier independently.
 4. Map scat syllable probabilities to observed articulation classes and continuous controls.
 
+## Evaluation Plan
+
+Evaluate vanilla DDSP and Bass-DDSP v2 on the same held-out single notes and generated riffs. Keep the first comparison small and interpretable; the goal is to decide whether the bass-specific architecture actually improves pitch, loudness, attack, and perceived bass realism.
+
+| Metric | What It Answers | Direction |
+|---|---|---:|
+| Multi-scale STFT loss | Does the reconstruction match the target spectrum overall? | lower |
+| Log Spectral Distance, dB | How far is the reconstructed spectrum from the target in an interpretable dB scale? | lower |
+| Frame RMS ratio | Is reconstructed loudness too quiet or too loud compared to target? | close to `1.0` |
+| Frame RMS correlation | Does the reconstructed loudness envelope move like the target envelope? | higher |
+| F0 cents error | Does the output audio actually sound at the intended bass pitch? | lower |
+| Gross pitch error | What percent of voiced frames are clearly wrong pitch? | lower |
+| Onset high-frequency error | Are attacks sharp and broadband enough during the first `100-150 ms` after note onsets? | lower |
+| Onset energy ratio | Is transient energy too weak or too strong compared to target? | close to `1.0` |
+| FAD | Does the generated audio distribution resemble real bass audio globally? | lower |
+| Listening preference | Which model sounds more like a real bass to humans? | higher |
+
+Primary report table:
+
+```text
+model | MSS ↓ | LSD dB ↓ | RMS ratio ≈1 | RMS corr ↑ | F0 cents ↓ | gross pitch % ↓ | onset HF ↓ | onset energy ≈1 | FAD ↓ | preference ↑
+```
+
+`FAD` is useful, but it should be treated as a secondary distribution-level score. It is less diagnostic than pitch, loudness, and onset metrics, and it needs many held-out clips to be meaningful.
+
+Listening test should stay simple:
+
+```text
+20 held-out riffs
+randomized vanilla DDSP vs Bass-DDSP v2
+ratings: bass realism 1-5, attack/note clarity 1-5
+forced preference: vanilla / Bass-DDSP v2 / no clear preference
+```
+
+Branch RMS is a Bass-DDSP v2 diagnostic, not a vanilla-vs-v2 winner metric:
+
+```text
+transient RMS
+sustain RMS
+noise RMS
+final RMS
+branch gain dB
+```
+
+Bass-DDSP v2 should only be considered better if it improves the attack/loudness/pitch metrics or listening preference, not merely because it has a more complex architecture.
+
 ## Diagnostics
 
 Use unique run names. Existing run folders should not be overwritten unless explicitly requested.

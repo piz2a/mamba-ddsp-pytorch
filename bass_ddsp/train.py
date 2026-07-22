@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import yaml
 
-from bass_ddsp.baselines import VanillaDDSP
+from bass_ddsp.baselines import VanillaDDSP, VanillaDWTS
 from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
 from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
@@ -108,8 +108,10 @@ def make_model(config):
         return BassDDSPV2(**model_config)
     if model_type == "vanilla_ddsp":
         return VanillaDDSP(**model_config)
+    if model_type == "vanilla_dwts":
+        return VanillaDWTS(**model_config)
     raise ValueError(
-        "model.model_type must be 'bass_ddsp_v2' or 'vanilla_ddsp', "
+        "model.model_type must be 'bass_ddsp_v2', 'vanilla_ddsp', or 'vanilla_dwts', "
         f"got {model_type!r}"
     )
 
