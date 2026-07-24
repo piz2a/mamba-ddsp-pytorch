@@ -25,7 +25,7 @@ The first implementation target is analysis and visualization, not final classif
 - Analysis window: `32 ms`
 - Window size: `512 samples`
 
-This matches the Bass-DDSP control rate and makes Silero VAD easy to align because Silero emits one probability every `512` samples, i.e. `32 ms`.
+This matches the Bass-DDSP control rate. Silero VAD also emits one probability every `512` samples, i.e. `32 ms`, so it can be aligned cleanly for diagnostics and as one weak activity cue.
 
 ## Current Control Definitions
 
@@ -46,15 +46,22 @@ This matches the Bass-DDSP control rate and makes Silero VAD easy to align becau
 
 ### `gate(t)`
 
-- Use causal Silero VAD probability.
-- Apply hysteresis:
+- Do not use Silero VAD as the owner of `gate(t)`.
+- Use a fused causal activity signal so quiet voiced notes and unvoiced/percussive scat can both stay active.
+- Current fused evidence:
+  - relative RMS energy above the recording noise floor,
+  - TorchCREPE periodicity for voiced notes,
+  - high-frequency ratio, ZCR, HPSS percussive evidence, and spectral flux for unvoiced/percussive notes,
+  - Silero VAD as a diagnostic/helper cue only.
+- Apply hysteresis to the fused evidence:
   - open threshold > close threshold,
   - this prevents fast flickering near the decision boundary.
 - Interpret as "voice/scat is active enough to synthesize bass."
+- Thresholds are independent of absolute loudness. Energy is normalized relative to the recording's estimated noise floor.
 
 ### `offset(t)`
 
-- Derive from causal VAD falling edges.
+- Derive from fused activity gate falling edges.
 - It is a pulse when the hysteresis gate changes from `1` to `0`.
 - This is a note/control-state boundary cue, not a spectral offset detector.
 
@@ -146,9 +153,40 @@ The lab should visualize:
 - high-frequency ratio / spectral tilt,
 - optional ContentVec novelty.
 
+## Implemented Lab Decisions
+
+- ContentVec checkpoint:
+  - default path: `/workspace/contentvec/checkpoints/checkpoint_best_legacy_100.pt`
+  - override with `CONTENTVEC_CHECKPOINT=/path/to/checkpoint.pt`
+  - legacy checkpoint loads through fairseq's built-in HuBERT loader.
+- The linear-frequency STFT magnitude plot is removed from the notebook.
+- The notebook uses the log-mel spectrogram plus explicit control tracks for debugging.
+- `onset_strength(t)` is no longer just a placeholder:
+  - combined boundary evidence = HPSS + spectral flux + high-frequency ratio + ContentVec boundary + ZCR,
+  - accepted note onsets = VAD rising edge plus strong internal boundary peaks while gate is active,
+  - `onset_strength(t)` is emitted only inside the short onset/classification window.
+- Current conservative defaults:
+  - fused gate open threshold: `0.34`,
+  - fused gate close threshold: `0.22`,
+  - activity energy threshold: recording noise floor + `6 dB`,
+  - Silero activity contribution weight: `0.35`,
+  - minimum internal onset distance: `200 ms`,
+  - internal onset boundary height: `0.85`,
+  - internal onset prominence: `0.15`,
+  - onset/articulation classification window: `128 ms`.
+- `articulation_id(t)` is no longer a per-frame free variable:
+  - class set: `FS_NO`, `MU_NO`, `PK_NO`, `SP_NO`, `ST_NO`, `FS_DN`,
+  - a deterministic lab scoring function evaluates onset-window features,
+  - a causal state machine latches the selected articulation,
+  - the latched articulation is held until the next detected note onset or VAD offset.
+- This deterministic scoring function is a laboratory stand-in.
+  The state-machine interface is the durable part; once labeled scat data exists, replace the score function with the planned causal GRU classifier.
+- Implementation has been modularized into `/workspace/vocal_controls.py`.
+  `/workspace/learn/scat_feature_extraction_colab.ipynb` is now a thin local lab wrapper with no embedded long functions.
+
 ## Current Assumptions
 
 - The final system is causal or near-causal.
 - `note_age(t)` is allowed; `note_progress(t)` is not allowed.
 - `articulation_id(t)` should be note-latched, not continuously free-running.
-- `onset_strength(t)` and `articulation_id(t)` are still research targets and must be evaluated on actual voice recordings.
+- `onset_strength(t)` and `articulation_id(t)` now have deterministic lab implementations, but their scoring rules are still research targets and must be evaluated on actual voice recordings.
