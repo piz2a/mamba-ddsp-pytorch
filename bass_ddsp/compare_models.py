@@ -278,8 +278,8 @@ def _read_loss_tail(run_dir, tail=1000):
     if not path.exists():
         return {}
     rows = []
-    with open(path, "r", newline="") as handle:
-        reader = csv.DictReader(handle)
+    with open(path, "r", newline="", errors="ignore") as handle:
+        reader = csv.DictReader(line.replace("\x00", "") for line in handle)
         for row in reader:
             rows.append(row)
     if not rows:
@@ -345,8 +345,8 @@ def _plot_loss_curves(path, runs):
             continue
         steps = []
         values = {field: [] for field, _ in fields}
-        with open(loss_path, "r", newline="") as handle:
-            reader = csv.DictReader(handle)
+        with open(loss_path, "r", newline="", errors="ignore") as handle:
+            reader = csv.DictReader(line.replace("\x00", "") for line in handle)
             for row in reader:
                 step = int(float(row["step"]))
                 if step % 200 != 0:

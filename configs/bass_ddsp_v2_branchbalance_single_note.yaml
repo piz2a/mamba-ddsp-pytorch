@@ -45,18 +45,58 @@ idmt_bass:
   seed:
 
 model:
-  model_type: vanilla_ddsp
   hidden_size: 256
   n_harmonic: 100
   n_bands: 65
   sampling_rate: *samplingrate
   block_size: *blocksize
   recurrent_type: gru
+  mamba_d_state: 16
+  mamba_d_conv: 4
+  mamba_expand: 2
+  z_size: 64
+  articulation_embedding_size: 24
   scale_f0_input: true
   f0_min_hz: 30.0
   f0_max_hz: 330.0
   pitch_hidden_size: 64
   loudness_hidden_size: 64
+  z_hidden_size: 256
+  use_note_shape_controls: true
+  use_transient_branch: true
+  use_sustain_branch: true
+  use_noise_branch: true
+  use_reverb: false
+  n_wavetables: 16
+  wavetable_length: 512
+  wavetable_init_std: 0.01
+  sustain_fade_seconds: 0.006
+  sustain_age_mix_rate: 0.0
+  use_sustain_age_mix: false
+  noise_decay_rate: 10.0
+  transient_decay_rate: 18.0
+  learnable_decay_rates: false
+  harmonic_indicator_a: 10.0
+  harmonic_indicator_b: 0.7
+  harmonic_gate_floor: 0.15
+  loudness_gain_db_per_std: 8.0
+  loudness_gain_min: 0.15
+  loudness_gain_max: 4.0
+  transient_seconds: 0.30
+  transient_type: dct_bank
+  transient_dct_components: 8
+  transient_dct_bank_components: 2048
+  transient_dct_min_cycles: 0.5
+  transient_dct_max_cycles: 64.0
+  transient_dct_amplitude_scale: 1.0
+  transient_dct_amplitude_floor: 0.05
+  transient_dct_gain_floor: 0.05
+  transient_dct_taper_strength: 0.0
+  transient_dct_normalize_coefficients: true
+  noise_envelope_mode: gate
+  transient_envelope_mode: window
+  transient_window_fade_seconds: 0.040
+  transient_velocity_floor: 0.25
   sustain_gain_db: 12.0
   noise_gain_db: 0.0
   transient_gain_db: 0.0

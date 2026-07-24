@@ -60,7 +60,7 @@ model:
   sustain_gain_db: 12.0
   noise_gain_db: 0.0
   transient_gain_db: 0.0
-  learnable_branch_gains: true
+  learnable_branch_gains: false
 
 train:
   scales: [4096, 2048, 1024, 512, 256, 128]

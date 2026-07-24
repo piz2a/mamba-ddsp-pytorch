@@ -45,10 +45,12 @@ idmt_bass:
   seed:
 
 model:
-  model_type: vanilla_ddsp
+  model_type: vanilla_dwts
   hidden_size: 256
-  n_harmonic: 100
   n_bands: 65
+  n_wavetables: 16
+  wavetable_length: 512
+  wavetable_init_std: 0.01
   sampling_rate: *samplingrate
   block_size: *blocksize
   recurrent_type: gru

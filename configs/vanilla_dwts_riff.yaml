@@ -1,19 +1,19 @@
 data:
-  dataset: idmt_bass_note
+  dataset: idmt_bass_riff
   data_location: /disk1/ahnjiho/IDMT-SMT-BASS
   extension: "wav"
 
 preprocess:
   sampling_rate: &samplingrate 16000
-  signal_length: &signallength 32000
+  signal_length: &signallength 32768
   block_size: &blocksize 256
 
 idmt_bass:
-  examples_per_epoch: 512
-  min_note_seconds: 0.35
-  max_note_seconds: 1.35
-  min_crossfade_seconds: 0.040
-  max_crossfade_seconds: 0.090
+  examples_per_epoch: 1024
+  min_note_seconds: 0.28
+  max_note_seconds: 1.10
+  min_crossfade_seconds: 0.030
+  max_crossfade_seconds: 0.075
   trim_top_db: 35.0
   trim_onset_top_db: 25.0
   trim_noise_percentile: 20.0
@@ -34,7 +34,7 @@ idmt_bass:
   include_expression_styles: ["NO", "DN"]
   include_string_numbers: [1, 2, 3, 4]
   deduplicate: true
-  cache_size: 512
+  cache_size: 768
   pitch_source: labels
   pitch_fmin: 30.0
   pitch_fmax: 330.0
@@ -45,10 +45,12 @@ idmt_bass:
   seed:
 
 model:
-  model_type: vanilla_ddsp
+  model_type: vanilla_dwts
   hidden_size: 256
-  n_harmonic: 100
   n_bands: 65
+  n_wavetables: 16
+  wavetable_length: 512
+  wavetable_init_std: 0.01
   sampling_rate: *samplingrate
   block_size: *blocksize
   recurrent_type: gru
