@@ -7,6 +7,8 @@ ddsp_pytorch-modified/
 ddsp-guitar/
 diff-wave-synth/
 mamba/
+contentvec/
+silero-vad/
 
 __pycache__/
 *.py[cod]
