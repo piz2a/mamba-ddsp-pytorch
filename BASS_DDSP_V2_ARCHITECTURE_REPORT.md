@@ -115,7 +115,6 @@ attention -> audio-rate table mix
 hidden -> sustain amplitude
 loudness -> deterministic loudness_gain
 periodicity -> DDSP-SFX harmonic gate
-note_age -> attention mix toward fundamental over time
 ```
 
 The sustain output is:
@@ -145,9 +144,10 @@ sustain_fade_seconds: 0.006
 harmonic_indicator_a: 10.0
 harmonic_indicator_b: 0.7
 harmonic_gate_floor: 0.15
+use_sustain_age_mix: false
 ```
 
-The short fade-in is the current click-prevention mechanism for sustain note starts. The note-age sustain effect does not multiply sustain energy directly; it shifts wavetable attention toward the initialized fundamental table as a causal high-frequency-first decay proxy.
+The short fade-in is the current click-prevention mechanism for sustain note starts. The previous note-age attention mix toward the initialized fundamental table is disabled in the active configs because it made the sustain branch too dark before training learned to compensate.
 
 ## Transient Branch
 
@@ -167,12 +167,12 @@ The final transient branch is:
 ```text
 transient = transient_raw
             * gate
-            * onset_strength
-            * exp(-A_transient * note_age)
+            * transient_window(note_age)
+            * (velocity_floor + (1 - velocity_floor) * onset_strength)
             * branch_gain
 ```
 
-This branch is available at every frame, but its audible energy is controlled by continuous `onset_strength` and causal note decay. It is not restricted to one binary onset frame.
+`transient_window(note_age)` is a fixed causal support window over the learned transient prototype duration. In the branch-balance configs it stays near `1` for the early transient region and fades to `0` over the final window tail. This avoids the previous trainable exponential decay that attenuated the transient branch before it could contribute useful attack energy.
 
 ## Noise Branch
 
@@ -188,22 +188,25 @@ The final noise branch is:
 ```text
 noise = noise_raw
         * gate
-        * onset_strength
-        * exp(-A_noise * note_age)
         * branch_gain
 ```
 
-The noise source is stochastic per forward pass.
+The branch-balance configs intentionally remove hard `onset_strength` and `exp(-A_noise * note_age)` multiplication from the noise branch. The noise source is stochastic per forward pass and should be available across the whole active note interval for string/body/fret residual energy.
 
 ## Branch Decay And Loudness
 
-The branch decay rates are positive and trainable by default:
+The branch-balance configs disable sustain age-mix and do not use noise/transient exponential decay in the final branch envelopes:
 
 ```yaml
-sustain_age_mix_rate: 1.0
+sustain_age_mix_rate: 0.0
+use_sustain_age_mix: false
 noise_decay_rate: 10.0
 transient_decay_rate: 18.0
-learnable_decay_rates: true
+learnable_decay_rates: false
+noise_envelope_mode: gate
+transient_envelope_mode: window
+transient_window_fade_seconds: 0.040
+transient_velocity_floor: 0.25
 ```
 
 `loudness(t)` is now deterministic in the sustain path:
@@ -310,16 +313,16 @@ Interpretation:
 
 ## Current Gain Staging
 
-The active configs initialize sustain gain at `+12 dB` and make branch gains trainable:
+The active configs use fixed branch gains rather than trainable branch-wise gain scalars:
 
 ```yaml
 sustain_gain_db: 12.0
 noise_gain_db: 0.0
 transient_gain_db: 0.0
-learnable_branch_gains: true
+learnable_branch_gains: false
 ```
 
-This is a gain-calibration fix for the DWTS sustain path. The previous additive sustain branch had a direct total-amplitude parameter and was less prone to starting extremely quiet. DWTS sustain has several multiplicative attenuators: learned amplitude, wavetable attention, gate, fade-in, deterministic loudness gain, and harmonic gate.
+The `+12 dB` sustain value is fixed gain staging for the DWTS sustain path. The previous additive sustain branch had a direct total-amplitude parameter and was less prone to starting extremely quiet. DWTS sustain has several multiplicative attenuators: learned amplitude, wavetable attention, gate, fade-in, deterministic loudness gain, and harmonic gate.
 
 ## Current Training Scripts
 
@@ -381,6 +384,6 @@ The next technical issue is not branch connectivity. It is loudness/energy calib
 Recommended next experiments:
 
 1. Run a longer single-note stage with W&B enabled and inspect `signal/target RMS`, `sustain_attention`, and transient bank plots.
-2. If the model stays quiet, inspect whether `sustain_gain_db` is learning upward/downward and whether `loudness_gain` is clipping.
+2. If the model stays quiet, inspect fixed sustain gain staging, learned sustain amplitude, and whether `loudness_gain` is clipping.
 3. If sustain keeps absorbing attack energy, reintroduce HPSS-derived branch supervision in a controlled way after the simplified baseline is measured.
 4. Only start riff training after isolated notes have believable attack and decay.

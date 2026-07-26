@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
-from bass_ddsp.train import make_model
+from bass_ddsp.train import clean_state_dict, make_model
 
 
 def make_dataset(config, seed, pitch_source):
@@ -42,7 +42,7 @@ def load_model(config, run_dir, dataset, device):
     if model_config.get("model_type", "bass_ddsp_v2") == "bass_ddsp_v2":
         model_config["n_articulation"] = dataset.n_articulation
     model = make_model({"model": model_config}).to(device)
-    state = torch.load(run_dir / "state.pth", map_location=device)
+    state = clean_state_dict(torch.load(run_dir / "state.pth", map_location=device))
     model.load_state_dict(state)
     model.eval()
     return model
@@ -126,6 +126,26 @@ def reconstruct(model, config, data, device):
     if getattr(model, "last_sustain_harmonic_gate", None) is not None:
         branches["_sustain_harmonic_gate"] = (
             model.last_sustain_harmonic_gate
+            .squeeze(0)
+            .squeeze(-1)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_noise_envelope", None) is not None:
+        branches["_noise_envelope"] = (
+            model.last_noise_envelope
+            .squeeze(0)
+            .squeeze(-1)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+    if getattr(model, "last_transient_envelope", None) is not None:
+        branches["_transient_envelope"] = (
+            model.last_transient_envelope
             .squeeze(0)
             .squeeze(-1)
             .detach()
@@ -240,6 +260,10 @@ def write_sample(out_dir, sample_name, data, branches):
         np.save(sample_dir / "sustain_loudness_gain.npy", branches["_sustain_loudness_gain"])
     if "_sustain_harmonic_gate" in branches:
         np.save(sample_dir / "sustain_harmonic_gate.npy", branches["_sustain_harmonic_gate"])
+    if "_noise_envelope" in branches:
+        np.save(sample_dir / "noise_envelope.npy", branches["_noise_envelope"])
+    if "_transient_envelope" in branches:
+        np.save(sample_dir / "transient_envelope.npy", branches["_transient_envelope"])
     return {"sample": sample_name, "metrics": rows, "intervals": data["intervals"]}
 
 

@@ -16,6 +16,13 @@ from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
 
 
+def clean_state_dict(state):
+    state = dict(state)
+    state.pop("branch_log_gain_min", None)
+    state.pop("branch_log_gain_max", None)
+    return state
+
+
 def frame_log_rms(signal, block_size):
     usable = signal.shape[-1] - (signal.shape[-1] % block_size)
     signal = signal[..., :usable]
@@ -180,7 +187,7 @@ def main():
 
     model = make_model(config).to(device)
     if args.init_state:
-        state = torch.load(args.init_state, map_location=device)
+        state = clean_state_dict(torch.load(args.init_state, map_location=device))
         model.load_state_dict(state)
     dataloader = torch.utils.data.DataLoader(
         dataset,

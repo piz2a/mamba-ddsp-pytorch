@@ -162,6 +162,7 @@ class BassDDSPV2(nn.Module):
         wavetable_init_std=0.01,
         sustain_fade_seconds=0.006,
         sustain_age_mix_rate=1.0,
+        use_sustain_age_mix=True,
         noise_decay_rate=10.0,
         transient_decay_rate=18.0,
         learnable_decay_rates=True,
@@ -192,6 +193,12 @@ class BassDDSPV2(nn.Module):
         noise_gain_db=0.0,
         transient_gain_db=0.0,
         learnable_branch_gains=False,
+        branch_gain_min_db=None,
+        branch_gain_max_db=None,
+        noise_envelope_mode="onset_decay",
+        transient_envelope_mode="onset_decay",
+        transient_window_fade_seconds=0.04,
+        transient_velocity_floor=0.25,
     ):
         super().__init__()
         if n_articulation <= 0:
@@ -211,6 +218,7 @@ class BassDDSPV2(nn.Module):
         self.wavetable_length = int(wavetable_length)
         self.wavetable_init_std = float(wavetable_init_std)
         self.sustain_fade_seconds = float(sustain_fade_seconds)
+        self.use_sustain_age_mix = bool(use_sustain_age_mix)
         self.harmonic_indicator_a = float(harmonic_indicator_a)
         self.harmonic_indicator_b = float(harmonic_indicator_b)
         self.harmonic_gate_floor = float(harmonic_gate_floor)
@@ -232,6 +240,22 @@ class BassDDSPV2(nn.Module):
         self.transient_dct_normalize_coefficients = bool(
             transient_dct_normalize_coefficients
         )
+        self.noise_envelope_mode = str(noise_envelope_mode)
+        self.transient_envelope_mode = str(transient_envelope_mode)
+        self.transient_window_fade_seconds = float(transient_window_fade_seconds)
+        self.transient_velocity_floor = float(transient_velocity_floor)
+        if self.noise_envelope_mode not in {"onset_decay", "gate"}:
+            raise ValueError(
+                "noise_envelope_mode must be 'onset_decay' or 'gate', "
+                f"got {noise_envelope_mode!r}"
+            )
+        if self.transient_envelope_mode not in {"onset_decay", "window"}:
+            raise ValueError(
+                "transient_envelope_mode must be 'onset_decay' or 'window', "
+                f"got {transient_envelope_mode!r}"
+            )
+        if not 0.0 <= self.transient_velocity_floor <= 1.0:
+            raise ValueError("transient_velocity_floor must be between 0 and 1")
         if self.transient_type not in {"waveform_bank", "dct", "dct_bank"}:
             raise ValueError(
                 "transient_type must be 'waveform_bank', 'dct', or 'dct_bank', "
@@ -401,6 +425,8 @@ class BassDDSPV2(nn.Module):
             self.branch_log_gains = nn.Parameter(log_gain)
         else:
             self.register_buffer("branch_log_gains", log_gain)
+        self._ignored_branch_gain_min_db = branch_gain_min_db
+        self._ignored_branch_gain_max_db = branch_gain_max_db
 
         self.reverb = Reverb(sampling_rate, sampling_rate)
         self.register_buffer("phase", torch.zeros(1))
@@ -411,6 +437,8 @@ class BassDDSPV2(nn.Module):
         self.last_sustain_attention = None
         self.last_sustain_loudness_gain = None
         self.last_sustain_harmonic_gate = None
+        self.last_noise_envelope = None
+        self.last_transient_envelope = None
 
     @staticmethod
     def _build_idct_basis(size):
@@ -626,6 +654,32 @@ class BassDDSPV2(nn.Module):
         offset = offset.repeat(1, frames, 1, 1).reshape(1, frames * block_size, 1)
         return base + offset[:, :length]
 
+    def _transient_window(self, note_age_audio):
+        attack_seconds = max(self.transient_seconds, 1e-6)
+        fade_seconds = min(
+            max(self.transient_window_fade_seconds, 0.0),
+            attack_seconds,
+        )
+        age = note_age_audio.clamp_min(0.0)
+        if fade_seconds <= 1e-8:
+            return (age < attack_seconds).to(age)
+        fade_position = ((attack_seconds - age) / fade_seconds).clamp(0.0, 1.0)
+        return fade_position * fade_position * (3.0 - 2.0 * fade_position)
+
+    def _noise_envelope(self, gate_audio, onset_audio, note_age_audio):
+        if self.noise_envelope_mode == "gate":
+            return gate_audio
+        return gate_audio * onset_audio * self._note_decay(note_age_audio, 1)
+
+    def _transient_envelope(self, gate_audio, onset_audio, note_age_audio):
+        if self.transient_envelope_mode == "window":
+            velocity = (
+                self.transient_velocity_floor
+                + (1.0 - self.transient_velocity_floor) * onset_audio
+            )
+            return gate_audio * self._transient_window(note_age_audio) * velocity
+        return gate_audio * onset_audio * self._note_decay(note_age_audio, 2)
+
     def _wavetable_lookup(self, pitch, realtime=False):
         wavetable = torch.tanh(self.sustain_wavetables)
         length = pitch.shape[1]
@@ -671,11 +725,12 @@ class BassDDSPV2(nn.Module):
 
         waves = self._wavetable_lookup(pitch_audio, realtime)
         weights = torch.softmax(self.sustain_attention_proj(hidden), dim=-1)
-        age_mix = 1.0 - self._note_decay(note_age.clamp_min(0.0), 0)
-        weights = (
-            (1.0 - age_mix) * weights
-            + age_mix * self.fundamental_attention.to(weights)
-        )
+        if self.use_sustain_age_mix:
+            age_mix = 1.0 - self._note_decay(note_age.clamp_min(0.0), 0)
+            weights = (
+                (1.0 - age_mix) * weights
+                + age_mix * self.fundamental_attention.to(weights)
+            )
         weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-7)
         weights_audio = self._upsample_linear(weights, length)
 
@@ -869,20 +924,22 @@ class BassDDSPV2(nn.Module):
         note_age_audio = self._audio_note_age(note_age, length, block_size)  # (B, N, 1)
         gate_audio = self._upsample_linear(gate, length).clamp(0.0, 1.0)  # (B, N, 1)
         onset_audio = self._upsample_linear(onset_strength, length).clamp(0.0, 1.0)  # (B, N, 1)
-        noise_decay = self._note_decay(note_age_audio, 1)  # (B, N, 1)
-        transient_decay = self._note_decay(note_age_audio, 2)  # (B, N, 1)
+        noise_envelope = self._noise_envelope(gate_audio, onset_audio, note_age_audio)  # (B, N, 1)
+        transient_envelope = self._transient_envelope(gate_audio, onset_audio, note_age_audio)  # (B, N, 1)
 
         sustain_raw = self._wavetable_sustain_branch(hidden, pitch, gate, note_age, loudness, periodicity, realtime) if self.use_sustain_branch else zero  # (B, N, 1)
         noise_raw = self._noise_branch(hidden) if self.use_noise_branch else zero  # (B, N, 1)
         transient_raw = self._transient_branch(hidden, articulation, gate, note_age) if self.use_transient_branch else zero  # (B, N, 1)
 
         sustain = sustain_raw * self._branch_gain(0, sustain_raw)  # (B, N, 1)
-        noise = noise_raw * gate_audio * onset_audio * noise_decay * self._branch_gain(1, noise_raw)  # (B, N, 1)
-        transient = transient_raw * gate_audio * onset_audio * transient_decay * self._branch_gain(2, transient_raw)  # (B, N, 1)
+        noise = noise_raw * noise_envelope * self._branch_gain(1, noise_raw)  # (B, N, 1)
+        transient = transient_raw * transient_envelope * self._branch_gain(2, transient_raw)  # (B, N, 1)
         signal = sustain + noise + transient  # (B, N, 1)
         if self.use_reverb:  # scalar bool
             signal = self.reverb(signal)  # (B, N, 1)
 
+        self.last_noise_envelope = noise_envelope.detach()  # (B, N, 1)
+        self.last_transient_envelope = transient_envelope.detach()  # (B, N, 1)
         self.last_branch_outputs = {  # dict[str, Tensor]
             "sustain": sustain,  # (B, N, 1)
             "noise": noise,  # (B, N, 1)

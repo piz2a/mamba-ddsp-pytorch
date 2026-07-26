@@ -95,17 +95,29 @@ F0-dependent expression subclasses such as `BEQ`, `BES`, `SLD`, `SLU`, `VIF`, an
 
 Final audio is `transient + sustain + noise`. Reverb is disabled by default for debugging so attack and loudness problems stay visible.
 
-Branch envelopes:
+Active branch-balance envelope design:
 
 ```text
-decay_branch(t) = exp(-A_branch * note_age(t))
+sustain = wavetable_sustain
+          * gate
+          * fade_in(note_age)
+          * loudness_gain(t)
+          * harmonic_gate(periodicity)
 
-transient = transient_raw * gate * onset_strength * decay_transient
-noise     = noise_raw     * gate * onset_strength * decay_noise
-sustain   = wavetable_sustain * gate * loudness_gain(t) * harmonic_gate(periodicity)
+noise = noise_raw
+        * gate
+        * branch_gain
+
+transient = transient_raw
+            * gate
+            * transient_window(note_age)
+            * (velocity_floor + (1 - velocity_floor) * onset_strength)
+            * branch_gain
 ```
 
-`A_branch` is trainable and constrained positive with `softplus`. This gives each branch a causal note lifecycle while keeping loudness free to represent future vocal-driven bends/slides.
+`noise` is no longer hard-multiplied by `onset_strength` or `exp(-A_noise * note_age)`, because it must be available for continuous string/body/fret residual energy. `transient_window(note_age)` is a causal fixed support window over the learned transient-bank duration, with a short fade-out at the end to prevent leakage after the attack/residual region.
+
+`branch_gain` is fixed gain staging from config, not a learnable branch-wise gain parameter. The active configs also disable sustain age-mix so the wavetable attention is not forced toward the fundamental over note age.
 
 `periodicity(t)` becomes the Bass-DDSP adaptation of DDSP-SFX's harmonic indicator:
 
@@ -125,7 +137,7 @@ articulation_id
   -> 300 ms style-specific waveform
 sample-accurate note_age
   -> index waveform
-  -> apply causal decay envelope
+  -> apply fixed transient support window
 ```
 
 The active configs use `transient_type: dct_bank` with `transient_dct_bank_components: 2048`, giving each observed articulation class a trainable 300 ms attack/residual prototype.
