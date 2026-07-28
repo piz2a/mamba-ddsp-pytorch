@@ -8,8 +8,8 @@ import numpy as np
 import torch
 
 from bass_ddsp.dataset import IDMTBassRiffDataset
-from bass_onset_envelope import BassOnsetEnvelopeNet
-from train_bass_onset_envelope import collect_examples
+from onset_envelope_net.model import BassOnsetEnvelopeNet
+from onset_envelope_net.train import collect_examples
 
 
 def pearson_rows(pred, target):

@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from bass_ddsp.dataset import IDMTBassRiffDataset
-from bass_onset_envelope import BassOnsetEnvelopeNet
+from onset_envelope_net.model import BassOnsetEnvelopeNet
 
 
 def collect_examples(dataset, count, envelope_frames, seed):
