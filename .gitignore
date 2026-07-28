@@ -9,6 +9,8 @@ diff-wave-synth/
 mamba/
 contentvec/
 silero-vad/
+vocal-percussion-transcription/
+aubio/
 
 __pycache__/
 *.py[cod]
