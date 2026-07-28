@@ -136,11 +136,13 @@ def extract_pitch(signal, sampling_rate, block_size, fmin=30.0, fmax=2000.0):
 
         try:
             import torchcrepe
-        except OSError as exc:
-            if "torchaudio" not in str(exc):
-                raise
+        except OSError:
+            # torchcrepe.predict operates on tensors and does not need
+            # torchaudio's file-loading API. Retry when the installed
+            # torchaudio wheel expects a different CUDA runtime.
             for module_name in list(sys.modules):
-                if module_name == "torchcrepe" or module_name.startswith(
+                if module_name == "torchaudio" or module_name.startswith(
+                        "torchaudio.") or module_name == "torchcrepe" or module_name.startswith(
                         "torchcrepe."):
                     del sys.modules[module_name]
             _install_torchaudio_stub()

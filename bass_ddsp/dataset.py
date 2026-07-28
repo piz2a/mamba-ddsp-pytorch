@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 import math
@@ -40,6 +41,15 @@ class BassNote:
         return f"{self.pluck}_{self.expression}"
 
 
+@dataclass(frozen=True)
+class BassSingleTrackRecord:
+    track_id: str
+    audio_path: Path
+    notes_path: Path
+    events: tuple
+    samples: int
+
+
 def bass_note_frequency(string_number, fret_number):
     open_string_midi = {
         1: 28,  # E1
@@ -50,6 +60,10 @@ def bass_note_frequency(string_number, fret_number):
     }
     midi = open_string_midi[int(string_number)] + int(fret_number)
     return 440.0 * (2.0 ** ((midi - 69) / 12.0))
+
+
+def midi_note_frequency(midi_note):
+    return 440.0 * (2.0 ** ((float(midi_note) - 69.0) / 12.0))
 
 
 def parse_idmt_bass_note(path):
@@ -122,9 +136,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         periodicity_use_crepe_confidence=True,
         periodicity_crepe_model="tiny",
         periodicity_crepe_device="cpu",
-        periodicity_crepe_mix=0.35,
-        periodicity_mu_prior=0.25,
-        periodicity_dn_prior=0.45,
         include_expression_styles=EXPRESSION_STYLES,
         include_string_numbers=(1, 2, 3, 4),
         cache_size=384,
@@ -178,9 +189,6 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         self.periodicity_use_crepe_confidence = bool(periodicity_use_crepe_confidence)
         self.periodicity_crepe_model = str(periodicity_crepe_model)
         self.periodicity_crepe_device = str(periodicity_crepe_device)
-        self.periodicity_crepe_mix = float(periodicity_crepe_mix)
-        self.periodicity_mu_prior = float(periodicity_mu_prior)
-        self.periodicity_dn_prior = float(periodicity_dn_prior)
         self.include_expression_styles = {
             str(expression)
             for expression in include_expression_styles
@@ -398,11 +406,14 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
 
             try:
                 import torchcrepe
-            except OSError as exc:
-                if "torchaudio" not in str(exc):
-                    raise
+            except OSError:
+                # The installed torchaudio wheel can fail before torchcrepe is
+                # imported when its CUDA runtime does not match this image.
+                # torchcrepe.predict only needs the tensor model here, not
+                # torchaudio's file-loading API, so retry with a tiny stub.
                 for module_name in list(sys.modules):
-                    if module_name == "torchcrepe" or module_name.startswith(
+                    if module_name == "torchaudio" or module_name.startswith(
+                            "torchaudio.") or module_name == "torchcrepe" or module_name.startswith(
                             "torchcrepe."):
                         del sys.modules[module_name]
                 _install_torchaudio_stub()
@@ -421,8 +432,16 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             return cached
 
         torchcrepe = self._import_torchcrepe()
-        if torchcrepe is None or audio.size <= 1:
-            return None
+        if torchcrepe is None:
+            raise RuntimeError(
+                "TorchCREPE is required for periodicity extraction, but it "
+                "could not be imported. Refusing to fabricate a constant "
+                "periodicity control."
+            )
+        if audio.size <= 1:
+            raise RuntimeError(
+                f"Cannot extract TorchCREPE periodicity from empty source: {key}"
+            )
 
         try:
             if self.periodicity_crepe_device == "auto":
@@ -458,8 +477,10 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
             if periodicity.size == 0:
                 return None
             periodicity = np.clip(periodicity, 0.0, 1.0)
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(
+                f"TorchCREPE periodicity extraction failed for {key}: {exc}"
+            ) from exc
 
         self._periodicity_cache[key] = periodicity
         if self.cache_size > 0 and len(self._periodicity_cache) > self.cache_size:
@@ -638,38 +659,30 @@ class IDMTBassRiffDataset(torch.utils.data.Dataset):
         except Exception:
             return fallback.astype(np.float32, copy=True)
 
-    def _periodicity_prior(self, interval):
-        value = 0.95
-        if interval.get("pluck") == "MU":
-            value = min(value, self.periodicity_mu_prior)
-        if interval.get("expression") == "DN":
-            value = min(value, self.periodicity_dn_prior)
-        return float(np.clip(value, 0.0, 1.0))
-
     def _periodicity_track(self, intervals):
         frame_positions = (
             np.arange(self.frames, dtype=np.float32) * self.block_size
             + self.block_size / 2
         )
         periodicity = np.zeros(self.frames, dtype=np.float32)
-        mix = float(np.clip(self.periodicity_crepe_mix, 0.0, 1.0))
         for interval in intervals:
             start = float(interval["start_sample"])
             end = float(interval["end_sample"])
             active = (frame_positions >= start) & (frame_positions < end)
             if not np.any(active):
                 continue
-            prior = self._periodicity_prior(interval)
             source_curve = self._periodicity_cache.get(interval.get("source_path", ""))
             if source_curve is None or len(source_curve) == 0:
-                confidence = np.ones(int(np.sum(active)), dtype=np.float32)
-            else:
-                source_positions = frame_positions[active] - start
-                source_frames = np.floor(source_positions / self.block_size).astype(np.int64)
-                source_frames = np.clip(source_frames, 0, len(source_curve) - 1)
-                confidence = np.asarray(source_curve, dtype=np.float32)[source_frames]
+                raise RuntimeError(
+                    "Missing TorchCREPE periodicity curve for "
+                    f"{interval.get('source_path', '<unknown source>')}"
+                )
+            source_positions = frame_positions[active] - start
+            source_frames = np.floor(source_positions / self.block_size).astype(np.int64)
+            source_frames = np.clip(source_frames, 0, len(source_curve) - 1)
+            confidence = np.asarray(source_curve, dtype=np.float32)[source_frames]
             confidence = np.clip(confidence, 0.0, 1.0)
-            periodicity[active] = prior * ((1.0 - mix) + mix * confidence)
+            periodicity[active] = confidence
         return np.clip(periodicity, 0.0, 1.0).astype(np.float32)
 
     def _note_shape_tracks(self, intervals):
@@ -1040,4 +1053,454 @@ class IDMTBassNoteDataset(IDMTBassRiffDataset):
             "sampling_rate": self.sampling_rate,
             "block_size": self.block_size,
             "pitch_source": pitch_source,
+        }
+
+
+class IDMTBassSingleTrackDataset(IDMTBassRiffDataset):
+    """Natural-riff dataset for IDMT-SMT-BASS-SINGLE-TRACKS.
+
+    This class intentionally reuses the control builders from
+    IDMTBassRiffDataset. The only difference from the generated-riff dataset is
+    the audio/event source: notes come from annotated natural tracks instead of
+    random one-note concatenation.
+    """
+
+    def __init__(
+        self,
+        data_location,
+        sampling_rate,
+        block_size,
+        signal_length,
+        examples_per_epoch=None,
+        event_width_seconds=0.032,
+        hpss_margin=8.0,
+        periodicity_use_crepe_confidence=True,
+        periodicity_crepe_model="tiny",
+        periodicity_crepe_device="cpu",
+        include_expression_styles=EXPRESSION_STYLES,
+        include_string_numbers=(1, 2, 3, 4),
+        cache_size=32,
+        pitch_source="labels",
+        pitch_fmin=40.0,
+        pitch_fmax=600.0,
+        peak_normalize=True,
+        label_mode="observed_articulation",
+        use_note_shape_controls=True,
+        note_age_clip_seconds=1.0,
+        allowed_articulation_labels=None,
+        strict_track_articulations=True,
+        segment_start_mode="random",
+        audio_gain=1.0,
+        seed=None,
+        **kwargs,
+    ):
+        torch.utils.data.Dataset.__init__(self)
+        self.root = Path(data_location).expanduser()
+        if not self.root.exists():
+            raise FileNotFoundError(
+                f"IDMT-SMT-BASS-SINGLE-TRACKS root does not exist: {self.root}"
+            )
+
+        self.sampling_rate = int(sampling_rate)
+        self.block_size = int(block_size)
+        self.signal_length = int(signal_length)
+        self.frames = self.signal_length // self.block_size
+        self.event_width_samples = max(
+            1,
+            int(float(event_width_seconds) * self.sampling_rate),
+        )
+        self.hpss_margin = float(hpss_margin)
+        self.periodicity_use_crepe_confidence = bool(periodicity_use_crepe_confidence)
+        self.periodicity_crepe_model = str(periodicity_crepe_model)
+        self.periodicity_crepe_device = str(periodicity_crepe_device)
+        self.include_expression_styles = {
+            str(expression)
+            for expression in include_expression_styles
+        } if include_expression_styles else None
+        self.include_string_numbers = {
+            int(string_number)
+            for string_number in include_string_numbers
+        } if include_string_numbers else None
+        self.cache_size = int(cache_size)
+        self.pitch_source = pitch_source
+        self.pitch_fmin = float(pitch_fmin)
+        self.pitch_fmax = float(pitch_fmax)
+        self.peak_normalize = bool(peak_normalize)
+        self.label_mode = str(label_mode)
+        if self.label_mode not in {"pluck_expression", "observed_articulation"}:
+            raise ValueError(
+                "label_mode must be 'pluck_expression' or "
+                f"'observed_articulation', got {self.label_mode!r}"
+            )
+        self.use_note_shape_controls = bool(use_note_shape_controls)
+        self.note_age_clip_seconds = max(1e-4, float(note_age_clip_seconds))
+        self.strict_track_articulations = bool(strict_track_articulations)
+        self.segment_start_mode = str(segment_start_mode)
+        if self.segment_start_mode not in {"random", "track_start"}:
+            raise ValueError(
+                "segment_start_mode must be 'random' or 'track_start', "
+                f"got {self.segment_start_mode!r}"
+            )
+        self.audio_gain = float(audio_gain)
+        self.seed = None if seed is None else int(seed)
+        self._audio_cache = OrderedDict()
+        self._periodicity_cache = OrderedDict()
+
+        self.allowed_articulation_labels = (
+            tuple(str(label) for label in allowed_articulation_labels)
+            if allowed_articulation_labels else None
+        )
+        self.track_records = self._load_track_records()
+        if not self.track_records:
+            raise FileNotFoundError(
+                "found no usable IDMT-SMT-BASS-SINGLE-TRACKS files under "
+                f"{self.root}. Check allowed_articulation_labels and "
+                "strict_track_articulations."
+            )
+
+        kept_events = [
+            event
+            for record in self.track_records
+            for event in record.events
+        ]
+        self.pluck_labels = _ordered_labels(
+            [event["pluck"] for event in kept_events],
+            PLUCKING_STYLES,
+        )
+        self.expression_labels = _ordered_labels(
+            [event["expression"] for event in kept_events],
+            EXPRESSION_STYLES,
+        )
+        if self.allowed_articulation_labels is not None:
+            self.articulation_labels = list(self.allowed_articulation_labels)
+        else:
+            self.articulation_labels = _ordered_labels(
+                [event["articulation"] for event in kept_events],
+                OBSERVED_ARTICULATION_STYLES,
+            )
+        self.pluck_to_id = {
+            label: idx for idx, label in enumerate(self.pluck_labels)
+        }
+        self.expression_to_id = {
+            label: idx for idx, label in enumerate(self.expression_labels)
+        }
+        self.articulation_to_id = {
+            label: idx for idx, label in enumerate(self.articulation_labels)
+        }
+        self.examples_per_epoch = (
+            int(examples_per_epoch)
+            if examples_per_epoch is not None
+            else len(self.track_records)
+        )
+
+    @staticmethod
+    def _read_single_track_events(notes_path):
+        events = []
+        with open(notes_path, "r", newline="") as handle:
+            for row in csv.reader(handle):
+                if not row:
+                    continue
+                pluck = str(row[5])
+                expression = str(row[6])
+                events.append({
+                    "start_seconds": float(row[0]),
+                    "end_seconds": float(row[1]),
+                    "midi": int(float(row[2])),
+                    "string": int(float(row[3])),
+                    "fret": int(float(row[4])),
+                    "pluck": pluck,
+                    "expression": expression,
+                    "articulation": f"{pluck}_{expression}",
+                    "modulation_frequency_hz": float(row[7]),
+                    "modulation_range_cents": float(row[8]),
+                })
+        return events
+
+    def _event_allowed(self, event):
+        if (self.include_expression_styles is not None
+                and event["expression"] not in self.include_expression_styles):
+            return False
+        if (self.include_string_numbers is not None
+                and int(event["string"]) not in self.include_string_numbers):
+            return False
+        if (self.allowed_articulation_labels is not None
+                and event["articulation"] not in self.allowed_articulation_labels):
+            return False
+        return True
+
+    def _load_track_records(self):
+        audio_dir = self.root / "audio"
+        notes_dir = self.root / "misc" / "notes_csv"
+        if not audio_dir.exists() or not notes_dir.exists():
+            raise FileNotFoundError(
+                "expected IDMT-SMT-BASS-SINGLE-TRACKS to contain "
+                "`audio/` and `misc/notes_csv/`"
+            )
+
+        records = []
+        self.excluded_tracks = []
+        for audio_path in sorted(audio_dir.glob("*.wav")):
+            track_id = audio_path.stem
+            notes_path = notes_dir / f"{track_id}_note_parameters.csv"
+            if not notes_path.exists():
+                continue
+            events = self._read_single_track_events(notes_path)
+            if not events:
+                continue
+            invalid = [event for event in events if not self._event_allowed(event)]
+            if invalid and self.strict_track_articulations:
+                counts = {}
+                for event in invalid:
+                    counts[event["articulation"]] = counts.get(event["articulation"], 0) + 1
+                self.excluded_tracks.append({
+                    "track_id": track_id,
+                    "invalid_articulation_counts": dict(sorted(counts.items())),
+                    "notes": len(events),
+                })
+                continue
+            kept = tuple(event for event in events if self._event_allowed(event))
+            if not kept:
+                continue
+            info = li.get_samplerate(audio_path)
+            duration = li.get_duration(path=audio_path)
+            samples = int(math.ceil(duration * self.sampling_rate))
+            if info == self.sampling_rate:
+                samples = int(round(duration * self.sampling_rate))
+            records.append(BassSingleTrackRecord(
+                track_id=track_id,
+                audio_path=audio_path,
+                notes_path=notes_path,
+                events=kept,
+                samples=max(1, samples),
+            ))
+        return records
+
+    def _load_track_audio(self, record):
+        key = str(record.audio_path)
+        cached = self._audio_cache.get(key)
+        if cached is not None:
+            self._audio_cache.move_to_end(key)
+            return cached
+
+        audio, _ = li.load(record.audio_path, sr=self.sampling_rate, mono=True)
+        audio = np.asarray(audio, dtype=np.float32) * self.audio_gain
+        if self.peak_normalize:
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            if peak > 0.99:
+                audio = audio * (0.99 / peak)
+
+        self._audio_cache[key] = audio
+        if self.cache_size > 0 and len(self._audio_cache) > self.cache_size:
+            self._audio_cache.popitem(last=False)
+        return audio
+
+    def _choose_record_and_start(self, rng, record_index=None):
+        if record_index is None:
+            record = rng.choice(self.track_records)
+        else:
+            record = self.track_records[int(record_index) % len(self.track_records)]
+        if self.signal_length >= record.samples or self.segment_start_mode == "track_start":
+            return record, 0
+
+        max_start = max(0, record.samples - self.signal_length)
+        for _ in range(32):
+            start = rng.randint(0, max_start)
+            end = start + self.signal_length
+            if any(
+                int(round(event["end_seconds"] * self.sampling_rate)) > start
+                and int(round(event["start_seconds"] * self.sampling_rate)) < end
+                for event in record.events
+            ):
+                return record, start
+
+        event = rng.choice(record.events)
+        event_start = int(round(event["start_seconds"] * self.sampling_rate))
+        jitter = rng.randint(0, max(1, self.signal_length // 2))
+        return record, min(max(0, event_start - jitter), max_start)
+
+    def _single_track_events(self, record, segment_start, audio):
+        segment_end = segment_start + self.signal_length
+        events = []
+        intervals = []
+        for note_index, annotation in enumerate(record.events):
+            note_start = int(round(annotation["start_seconds"] * self.sampling_rate))
+            note_end = int(round(annotation["end_seconds"] * self.sampling_rate))
+            if note_end <= segment_start or note_start >= segment_end:
+                continue
+
+            note = BassNote(
+                path=Path(f"{record.audio_path}#note-{note_index:04d}"),
+                pluck=annotation["pluck"],
+                expression=annotation["expression"],
+                string=int(annotation["string"]),
+                fret=int(annotation["fret"]),
+                frequency=midi_note_frequency(annotation["midi"]),
+            )
+            trim_info = {
+                "source_path": str(note.path),
+                "track_id": record.track_id,
+                "source_audio": str(record.audio_path),
+                "source_notes": str(record.notes_path),
+                "note_index": int(note_index),
+                "midi": int(annotation["midi"]),
+                "modulation_frequency_hz": float(annotation["modulation_frequency_hz"]),
+                "modulation_range_cents": float(annotation["modulation_range_cents"]),
+                "source_samples": int(note_end - note_start),
+                "segment_samples": int(min(note_end, segment_end) - max(note_start, segment_start)),
+                "target_samples": int(note_end - note_start),
+                "cropped": bool(note_start < segment_start or note_end > segment_end),
+            }
+
+            relative_start = note_start - segment_start
+            event = self._event(relative_start, note, trim_info, 0, relative_start)
+            event["end_sample"] = int(note_end - segment_start)
+            event["start_seconds"] = relative_start / self.sampling_rate
+            event["end_seconds"] = event["end_sample"] / self.sampling_rate
+            event["duration_seconds"] = (note_end - note_start) / self.sampling_rate
+            events.append(event)
+
+            interval = dict(event)
+            interval["start_sample"] = int(relative_start)
+            interval["end_sample"] = int(note_end - segment_start)
+            interval["start_seconds"] = interval["start_sample"] / self.sampling_rate
+            interval["end_seconds"] = interval["end_sample"] / self.sampling_rate
+            interval["duration_seconds"] = (
+                interval["end_sample"] - interval["start_sample"]
+            ) / self.sampling_rate
+            intervals.append(interval)
+
+            note_audio = audio[max(note_start, 0):min(note_end, audio.shape[0])]
+            self._source_periodicity(note, note_audio)
+
+        events.sort(key=lambda item: item["start_sample"])
+        intervals.sort(key=lambda item: item["start_sample"])
+        return events, intervals
+
+    def _single_track_riff(self, rng, record_index=None):
+        record, segment_start = self._choose_record_and_start(rng, record_index)
+        track_audio = self._load_track_audio(record)
+        segment = track_audio[segment_start:segment_start + self.signal_length]
+        audio = np.zeros(self.signal_length, dtype=np.float32)
+        audio[:segment.shape[0]] = segment.astype(np.float32, copy=False)
+
+        events, intervals = self._single_track_events(record, segment_start, track_audio)
+        if not events:
+            return self._single_track_riff(rng, record_index)
+
+        pluck, expression, articulation, label_pitch = self._label_tracks(events)
+        onset_pulse, offset = self._note_event_tracks(intervals)
+        onset_strength = self._hpss_onset_strength_track(audio, onset_pulse)
+        gate, note_age = self._note_shape_tracks(intervals)
+        periodicity = self._periodicity_track(intervals)
+        return (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset_strength,
+            offset,
+            gate,
+            note_age,
+            periodicity,
+            intervals,
+            record,
+            segment_start,
+        )
+
+    def __getitem__(self, idx):
+        rng = self._choose_rng(idx)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset_strength,
+            offset,
+            gate,
+            note_age,
+            periodicity,
+            _,
+            _,
+            _,
+            ) = self._single_track_riff(rng)
+
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+        pitch = self._pitch_track(audio, label_pitch)
+        return self._format_item(
+            audio,
+            pitch,
+            loudness,
+            pluck,
+            expression,
+            articulation,
+            onset_strength,
+            offset,
+            gate,
+            note_age,
+            periodicity,
+        )
+
+    def generate_debug_example(self, idx=0, pitch_source=None):
+        rng = self._choose_rng(idx)
+        (
+            audio,
+            pluck,
+            expression,
+            articulation,
+            label_pitch,
+            onset_strength,
+            offset,
+            gate,
+            note_age,
+            periodicity,
+            intervals,
+            record,
+            segment_start,
+        ) = self._single_track_riff(rng, record_index=idx)
+        loudness = extract_loudness(
+            audio,
+            self.sampling_rate,
+            self.block_size,
+        ).astype(np.float32)
+
+        pitch_source = pitch_source or self.pitch_source
+        old_pitch_source = self.pitch_source
+        self.pitch_source = pitch_source
+        try:
+            pitch = self._pitch_track(audio, label_pitch)
+        finally:
+            self.pitch_source = old_pitch_source
+
+        return {
+            "audio": audio,
+            "pitch": pitch,
+            "label_pitch": label_pitch,
+            "loudness": loudness,
+            "pluck": pluck,
+            "expression": expression,
+            "articulation": articulation,
+            "onset_strength": onset_strength,
+            "offset": offset,
+            "gate": gate,
+            "note_age": note_age,
+            "periodicity": periodicity,
+            "intervals": intervals,
+            "pluck_labels": list(self.pluck_labels),
+            "expression_labels": list(self.expression_labels),
+            "articulation_labels": list(self.articulation_labels),
+            "sampling_rate": self.sampling_rate,
+            "block_size": self.block_size,
+            "pitch_source": pitch_source,
+            "track_id": record.track_id,
+            "source_audio": str(record.audio_path),
+            "source_notes": str(record.notes_path),
+            "segment_start_sample": int(segment_start),
+            "segment_start_seconds": segment_start / self.sampling_rate,
+            "excluded_tracks": list(self.excluded_tracks),
         }

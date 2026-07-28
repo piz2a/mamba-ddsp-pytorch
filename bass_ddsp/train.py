@@ -11,7 +11,11 @@ from tqdm import tqdm
 import yaml
 
 from bass_ddsp.baselines import VanillaDDSP, VanillaDWTS
-from bass_ddsp.dataset import IDMTBassNoteDataset, IDMTBassRiffDataset
+from bass_ddsp.dataset import (
+    IDMTBassNoteDataset,
+    IDMTBassRiffDataset,
+    IDMTBassSingleTrackDataset,
+)
 from bass_ddsp.model import BassDDSPV2
 from ddsp.core import mean_std_loudness, multiscale_fft, safe_log
 
@@ -61,6 +65,7 @@ def parse_args():
     parser.add_argument("--device")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--init-state", help="Optional checkpoint to load before training.")
+    parser.add_argument("--step-offset", type=int, default=0, help="Global step to start from when resuming model weights.")
     parser.add_argument("--wandb", action="store_true", help="Log scalar metrics to Weights & Biases.")
     parser.add_argument("--wandb-project", default="bass-ddsp-v2")
     parser.add_argument("--wandb-entity")
@@ -93,18 +98,26 @@ def make_dataset(config):
     dataset_cls = {
         "idmt_bass_note": IDMTBassNoteDataset,
         "idmt_bass_riff": IDMTBassRiffDataset,
+        "idmt_bass_single_tracks": IDMTBassSingleTrackDataset,
     }.get(dataset_type)
     if dataset_cls is None:
         raise ValueError(
-            "data.dataset must be 'idmt_bass_note' or 'idmt_bass_riff', "
+            "data.dataset must be 'idmt_bass_note', 'idmt_bass_riff', or "
+            "'idmt_bass_single_tracks', "
             f"got {dataset_type!r}"
+        )
+    dataset_kwargs = dict(config.get("idmt_bass", {}))
+    if dataset_type == "idmt_bass_single_tracks":
+        dataset_kwargs.setdefault(
+            "allowed_articulation_labels",
+            data_config.get("articulation_labels"),
         )
     return dataset_cls(
         data_location=data_config["data_location"],
         sampling_rate=config["preprocess"]["sampling_rate"],
         block_size=config["preprocess"]["block_size"],
         signal_length=config["preprocess"]["signal_length"],
-        **config.get("idmt_bass", {}),
+        **dataset_kwargs,
     )
 
 
@@ -252,8 +265,9 @@ def main():
     best_loss = float("inf")
     mean_loss = 0.0
     n_element = 0
-    step = 0
-    epochs = int(np.ceil(args.steps / len(dataloader)))
+    step = int(args.step_offset)
+    remaining_steps = max(0, args.steps - step)
+    epochs = int(np.ceil(remaining_steps / len(dataloader))) if remaining_steps else 0
 
     for epoch in tqdm(range(epochs)):
         for batch in dataloader:

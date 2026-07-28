@@ -28,15 +28,12 @@ idmt_bass:
   periodicity_use_crepe_confidence: true
   periodicity_crepe_model: tiny
   periodicity_crepe_device: cpu
-  periodicity_crepe_mix: 0.35
-  periodicity_mu_prior: 0.25
-  periodicity_dn_prior: 0.45
   include_expression_styles: ["NO", "DN"]
   include_string_numbers: [1, 2, 3, 4]
   deduplicate: true
   cache_size: 512
   pitch_source: labels
-  pitch_fmin: 30.0
+  pitch_fmin: 40.0
   pitch_fmax: 330.0
   peak_normalize: true
   label_mode: observed_articulation
