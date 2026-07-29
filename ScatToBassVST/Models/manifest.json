@@ -1,0 +1,73 @@
+{
+  "bass_controller": {
+    "path": "bass_ddsp_controller.onnx",
+    "sha256": "d1af36346edc60eb555c4100b1e8f61ae8405eb2e29ed863667c9a4510eb687d",
+    "source_run": "/workspace/runs/bass_ddsp_v2_branchbalance_riff_20260723_052406_resume_to_50k_20260724_043513",
+    "max_abs_error": 8.642673492431641e-07
+  },
+  "torchcrepe": {
+    "path": "torchcrepe_tiny.onnx",
+    "max_abs_error": 1.177832018584013e-07,
+    "sha256": "17bc5cbaf31fa2b053ba4ad7d82102118104e544b8a6585ec5d9644973f39e3b"
+  },
+  "onset_envelope": {
+    "path": "onset_envelope.onnx",
+    "max_abs_error": 1.4901161193847656e-07,
+    "sha256": "9ad1f69956f2c2fb4b594f904f9d6e8add483f2afb8081c9d7623ff2b0b6f710",
+    "labels": [
+      "FS_NO",
+      "MU_NO",
+      "PK_NO",
+      "SP_NO",
+      "ST_NO",
+      "FS_BE",
+      "FS_DN",
+      "FS_VI"
+    ],
+    "control_names": [
+      "f0",
+      "loudness"
+    ],
+    "frames": 20
+  },
+  "synthesis": {
+    "source_checkpoint": "/workspace/runs/bass_ddsp_v2_branchbalance_riff_20260723_052406_resume_to_50k_20260724_043513/state.pth",
+    "source_checkpoint_sha256": "9efada41772b2d81277773cc771c2361c0744e50f27d2643cfb00d97e4bf2832",
+    "articulation_labels": [
+      "FS_NO",
+      "MU_NO",
+      "PK_NO",
+      "SP_NO",
+      "ST_NO",
+      "FS_DN"
+    ],
+    "wavetables": {
+      "path": "sustain_wavetables.f32",
+      "shape": [
+        16,
+        512
+      ],
+      "sha256": "f3a5b3795120d54a260d0923e6cfa633b8a0fb37dad22f0d0dfa103537ab0a16"
+    },
+    "transient_bank": {
+      "path": "transient_bank.f32",
+      "shape": [
+        6,
+        4800
+      ],
+      "sha256": "ba3c164b5cb1a22e62de85e4ea6fe01bace31ea1455e04df12a38c6cb06f7c07"
+    },
+    "sample_rate": 16000,
+    "hop_samples": 256,
+    "noise_bands": 65,
+    "sustain_gain_db": 12.0,
+    "loudness_gain_db_per_std": 8.0,
+    "harmonic_indicator_a": 10.0,
+    "harmonic_indicator_b": 0.7,
+    "harmonic_gate_floor": 0.15,
+    "sustain_fade_seconds": 0.006,
+    "transient_seconds": 0.3,
+    "transient_window_fade_seconds": 0.04,
+    "transient_velocity_floor": 0.25
+  }
+}
