@@ -2,15 +2,20 @@ absl-py==2.1.0
 aiohttp @ file:///rapids/aiohttp-3.9.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=ab40e6251c3873d86ea9b30a1ac6d7478c09277b32e14745d0d3c6e76e3c7e29
 aiosignal @ file:///rapids/aiosignal-1.3.1-py3-none-any.whl#sha256=f8376fb07dd1e86a584e4fcdec80b36b7f81aac666ebc724e2c090300dd83b17
 annotated-types==0.6.0
+antlr4-python3-runtime==4.8
+anyio==4.14.2
 apex @ file:///opt/pytorch/apex
+apprise==1.12.0
 argon2-cffi==23.1.0
 argon2-cffi-bindings==21.2.0
 asttokens==2.4.1
 astunparse==1.6.3
 async-timeout @ file:///rapids/async_timeout-4.0.3-py3-none-any.whl#sha256=7405140ff1230c310e51dc27b3145b9092d659ce68ff733fb0cefe3ee42be028
 attrs==23.2.0
+aubio==0.4.9
 audioread==3.0.1
 beautifulsoup4==4.12.3
+bitarray==3.9.1
 bleach==6.1.0
 blinker==1.9.0
 blis==0.7.11
@@ -23,6 +28,8 @@ click==8.4.2
 cloudpathlib==0.16.0
 cloudpickle @ file:///rapids/cloudpickle-3.0.0-py3-none-any.whl#sha256=246ee7d0c295602a036e86369c77fecda4ab17b506496730f2f576d9016fd9c7
 cmake==3.28.3
+colorama==0.4.6
+coloredlogs==15.0.1
 comm==0.2.1
 confection==0.1.4
 contourpy==1.2.0
@@ -52,11 +59,13 @@ exceptiongroup==1.2.0
 execnet==2.0.2
 executing==2.0.1
 expecttest==0.1.3
+fairseq==0.12.2
 fastjsonschema==2.19.1
 fastrlock @ file:///rapids/fastrlock-0.8.2-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_28_x86_64.whl#sha256=08315bde19d0c2e6b06593d5a418be3dc8f9b1ee721afa96867b9853fceb45cf
 filelock==3.13.1
 flash-attn==2.4.2
 Flask==3.1.3
+flatbuffers==25.12.19
 fonttools==4.49.0
 frozenlist @ file:///rapids/frozenlist-1.4.1-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=a9b2de4cf0cdd5bd2dee4c4f63a653c61d2408055ab77b151c1957f221cabf2a
 fsspec==2024.2.0
@@ -67,28 +76,41 @@ google-auth==2.28.2
 google-auth-oauthlib==0.4.6
 graphsurgeon @ file:///workspace/TensorRT-8.6.3.1/graphsurgeon/graphsurgeon-0.4.6-py2.py3-none-any.whl#sha256=0fbadaefbbe6e9920b9f814ae961c4a279be602812edf3ed7fb9cc6f8f4809fe
 grpcio==1.62.1
+h11==0.16.0
+hf-xet==1.5.1
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.23.0
+humanfriendly==10.0
+hydra-core==1.0.7
 hypothesis==5.35.1
 idna==3.6
 igraph==0.11.4
+imageio-ffmpeg==0.6.0
 importlib_metadata @ file:///rapids/importlib_metadata-7.0.2-py3-none-any.whl#sha256=f4bc4c0c070c490abf4ce96d715f68e95923320370efb66143df00199bb6c100
+importlib_resources==7.1.0
 iniconfig==2.0.0
 intel-openmp==2021.4.0
 ipykernel==6.29.3
 ipython==8.21.0
 ipython-genutils==0.2.0
+ipywidgets==8.1.8
 itsdangerous==2.2.0
+jams==0.3.5
 jedi==0.19.1
 Jinja2==3.1.3
 joblib==1.3.2
 json5==0.9.22
 jsonschema==4.21.1
 jsonschema-specifications==2023.12.1
+julius==0.2.8
 jupyter-tensorboard @ git+https://github.com/cliffwoolley/jupyter_tensorboard.git@ffa7e26138b82549453306e06b535a9ac36db17a
 jupyter_client==8.6.0
 jupyter_core==5.7.1
 jupyterlab==2.3.2
 jupyterlab-server==1.2.0
 jupyterlab_pygments==0.3.0
+jupyterlab_widgets==3.0.16
 jupytext==1.16.1
 kiwisolver==1.4.5
 langcodes==3.3.0
@@ -96,11 +118,12 @@ lark==1.1.9
 lazy_loader==0.3
 librosa==0.10.1
 lightning-thunder @ file:///tmp/dist/lightning_thunder-0.0.0.dev0-py3-none-any.whl#sha256=c9beeb55ae79456b6d1fd956a438b28847ceec260a34208cecdf9685da5b9c00
-lightning-utilities==0.10.1
+lightning-utilities==0.15.3
 llvmlite==0.42.0
 locket @ file:///rapids/locket-1.0.0-py2.py3-none-any.whl#sha256=b6c819a722f7b6bd955b80781788e4a66a55628b858d347536b7e81325a3a5e3
 looseversion==1.3.0
--e git+https://github.com/piz2a/mamba-ddsp-pytorch.git@44ab935b8e8c75d72829948bac386fa51d26783c#egg=mamba_ssm&subdirectory=mamba
+lxml==6.1.1
+-e git+https://github.com/piz2a/mamba-ddsp-pytorch.git@bd8f9984f7f2843a2c7a8804743b87a603d3e9e3#egg=mamba_ssm&subdirectory=mamba
 Markdown==3.5.2
 markdown-it-py==3.0.0
 MarkupSafe==2.1.5
@@ -108,6 +131,8 @@ matplotlib==3.8.3
 matplotlib-inline==0.1.6
 mdit-py-plugins==0.4.0
 mdurl==0.1.2
+mido==1.3.3
+mir_eval==0.8.2
 mistune==3.0.2
 mkl==2021.1.1
 mkl-devel==2021.1.1
@@ -131,7 +156,9 @@ nvidia-dali-cuda120==1.35.0
 nvidia-pyindex==1.0.9
 nvtx @ file:///rapids/nvtx-0.2.5-cp310-cp310-linux_x86_64.whl#sha256=533a85c65a72b2a32157d383074a7261cbf8605700a8fcaca4bb060d418155c8
 oauthlib==3.2.2
-onnx @ file:///opt/pytorch/pytorch/third_party/onnx
+omegaconf==2.0.6
+onnx==1.16.1
+onnxruntime-gpu==1.18.1
 opencv @ file:///opencv-4.7.0/modules/python/package
 opt-einsum==3.3.0
 optree==0.10.0
@@ -140,6 +167,7 @@ pandas @ file:///rapids/pandas-1.5.3-cp310-cp310-manylinux_2_17_x86_64.manylinux
 pandocfilters==1.5.1
 parso==0.8.3
 partd @ file:///rapids/partd-1.4.1-py3-none-any.whl#sha256=27e766663d36c161e2827aa3e28541c992f0b9527d3cca047e13fb3acdb989e6
+penn==1.0.0
 pexpect==4.9.0
 pillow @ file:///rapids/pillow-10.2.0-cp310-cp310-manylinux_2_28_x86_64.whl#sha256=322bdf3c9b556e9ffb18f93462e5f749d3444ce081290352c6070d014c93feb2
 platformdirs==4.2.0
@@ -147,11 +175,13 @@ pluggy==1.4.0
 ply @ file:///rapids/ply-3.11-py2.py3-none-any.whl#sha256=096f9b8350b65ebd2fd1346b12452efe5b9607f7482813ffca50c22722a807ce
 polygraphy==0.49.7
 pooch==1.8.1
+portalocker==3.2.0
 preshed==3.0.9
+pretty-midi==0.2.11
 prettytable==3.10.0
 prometheus_client==0.20.0
 prompt-toolkit==3.0.43
-protobuf==4.24.4
+protobuf==7.35.1
 psutil @ file:///rapids/psutil-5.9.4-cp310-abi3-linux_x86_64.whl#sha256=d9ef6819451327e5c25cb668eebf35c8a01ea7c14b6ef598b6a6c8ff5e225f97
 ptyprocess==0.7.0
 pure-eval==0.2.2
@@ -164,6 +194,7 @@ pycocotools @ git+https://github.com/nvidia/cocoapi.git@d99cbf3823588ef09a272165
 pycparser==2.21
 pydantic==2.6.3
 pydantic_core==2.16.3
+pydub==0.25.1
 Pygments==2.17.2
 pylibcugraph @ file:///rapids/pylibcugraph-24.2.0-cp310-cp310-manylinux_2_35_x86_64.whl#sha256=1c515e62130352cb1a0f6cfd45451722024ba503174c6ac81901bf8ec884610c
 pylibcugraphops @ file:///rapids/pylibcugraphops-24.2.0-cp310-cp310-linux_x86_64.whl#sha256=4e7f7ced3e276f9c6c11483d3cfa849a247e6d52184c287d9c3bebec9a2dd497
@@ -171,6 +202,7 @@ pylibraft @ file:///rapids/pylibraft-24.2.0-cp310-cp310-manylinux_2_35_x86_64.wh
 pynvjitlink @ file:///rapids/pynvjitlink-0.1.13-cp310-cp310-manylinux_2_35_x86_64.whl#sha256=a28fc86bebdb792ff34ea44a6e4013e53ed5d8b888537b3aa3185f2de06f7a9e
 pynvml @ file:///rapids/pynvml-11.4.1-py3-none-any.whl#sha256=d27be542cd9d06558de18e2deffc8022ccd7355bc7382255d477038e7e424c6c
 pyparsing==3.1.2
+pypdf==6.14.2
 pytest==8.0.2
 pytest-flakefinder==1.1.0
 pytest-rerunfailures==13.0
@@ -178,6 +210,7 @@ pytest-shard==0.1.2
 pytest-xdist==3.5.0
 python-dateutil==2.9.0.post0
 python-hostlist==1.23.0
+pytorch-lightning==2.6.5
 pytorch-quantization==2.1.2
 pytorch-triton @ file:///tmp/dist/pytorch_triton-2.2.0%2Be28a256d7-cp310-cp310-linux_x86_64.whl#sha256=6af05ee3a40681a8e1cd45f69eb3653eca7c0d03c07d406065f7ae8e1c38f7d6
 pytz @ file:///rapids/pytz-2024.1-py2.py3-none-any.whl#sha256=328171f4e3623139da4983451950b28e95ac706e13f3f2630a879749e7a8b319
@@ -194,6 +227,7 @@ rich @ file:///rapids/rich-13.7.1-py3-none-any.whl#sha256=4edbae314f59eb482f54e9
 rmm @ file:///rapids/rmm-24.2.0-cp310-cp310-manylinux_2_35_x86_64.whl#sha256=3e88e4031910dc15e9de44f60bc7897c59d58f319c82fe84b6411076da478496
 rpds-py==0.18.0
 rsa==4.9
+sacrebleu==2.6.0
 scikit-learn @ file:///rapids/scikit_learn-1.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=184a42842a4e698ffa4d849b6019de50a77a0aa24d26afa28fa49c9190bb144b
 scipy @ file:///rapids/scipy-1.12.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=5e32847e08da8d895ce09d108a494d9eb78974cf6de23063f93306a3e419960c
 Send2Trash==1.8.2
@@ -228,11 +262,15 @@ tinycss2==1.2.1
 toml==0.10.2
 tomli==2.0.1
 toolz @ file:///rapids/toolz-0.12.1-py3-none-any.whl#sha256=d22731364c07d72eea0a0ad45bafb2c2937ab6fd38a3507bf55eae8744aa7d85
+torbi==1.4.0
 torch @ file:///opt/transfer/torch-2.3.0a0%2B40ec155e58.nv24.3-cp310-cp310-linux_x86_64.whl#sha256=5230e3e37d2347e82daa6e1ccc2a5eeb9d8d673206f72d811339ad410d1596ad
 torch-tensorrt @ file:///opt/pytorch/torch_tensorrt/dist/torch_tensorrt-2.3.0a0-cp310-cp310-linux_x86_64.whl#sha256=905a9df8a2a360ac719ed8ff72c14fb6e3f807e60f5652025ad382ef08d009b7
+torchaudio==2.11.0
 torchcrepe==0.0.24
 torchdata @ file:///opt/pytorch/data
+torchmetrics==1.9.0
 torchtext @ file:///opt/pytorch/text
+torchutil==0.1.1
 torchvision @ file:///opt/pytorch/vision
 tornado==6.4
 tqdm==4.66.2
@@ -245,14 +283,16 @@ typing_extensions==4.10.0
 ucx-py @ file:///rapids/ucx_py-0.36.0-cp310-cp310-linux_x86_64.whl#sha256=3767f8a6c7d675ce4b336411a4556fc0fa30456c67293b3e18386dba056028c8
 uff @ file:///workspace/TensorRT-8.6.3.1/uff/uff-0.6.9-py2.py3-none-any.whl#sha256=618a3f812d491f0d3c4f2e38b99e03217ca37b206db14cee079f2bf681eb4fe3
 urllib3 @ file:///rapids/urllib3-1.26.18-py2.py3-none-any.whl#sha256=34b97092d7e0a3a8cf7cd10e386f401b3737364026c45e622aa02903dffe0f07
-wandb==0.28.0
+wandb==0.28.1
 wasabi==1.1.2
 wcwidth==0.2.13
 weasel==0.3.4
 webencodings==0.5.1
 Werkzeug==3.1.8
+widgetsnbextension==4.0.15
 xdoctest==1.0.2
 xgboost @ file:///rapids/xgboost-2.0.3-py3-none-linux_x86_64.whl#sha256=b7b5d04953eafd58412b1efd8e42ced986f05021a9cd95a97a36c96a3fb0cbd9
+yapecs==0.5.0
 yarl @ file:///rapids/yarl-1.9.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=357495293086c5b6d34ca9616a43d329317feab7917518bc97a08f9e55648455
 zict @ file:///rapids/zict-3.0.0-py2.py3-none-any.whl#sha256=5796e36bd0e0cc8cf0fbc1ace6a68912611c1dbd74750a3f3026b9b9d6a327ae
 zipp @ file:///rapids/zipp-3.17.0-py3-none-any.whl#sha256=0e923e726174922dce09c53c59ad483ff7bbb8e572e00c7f7c46b88556409f31
