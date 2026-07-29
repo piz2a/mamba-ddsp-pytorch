@@ -12,20 +12,30 @@ silero-vad/
 vocal-percussion-transcription/
 aubio/
 ddsp-vst/
+JUCE/
+SimpleBiquadLPF/
 
 __pycache__/
 *.py[cod]
 .pytest_cache/
+node_modules/
+*.tsbuildinfo
 
 *.egg-info/
 build/
 dist/
+
+# Generated Scat-to-Bass native assets. Recreate with tools/export_models.py.
+ScatToBassVST/Models/*.onnx
+ScatToBassVST/Models/*.f32
 
 runs/
 debug/
 ddsp_onnx_benchmark/build/
 ddsp_onnx_benchmark/models/
 ddsp_onnx_benchmark/vendor/
+demo/outputs/
+demo/uploads/
 
 data/MNIST
 .codex/

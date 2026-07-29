@@ -312,23 +312,35 @@ def _write_csv(path, rows):
 
 def _plot_metric_bars(path, summary):
     metrics = [
-        ("mss", "MSS loss"),
-        ("lsd_db", "LSD dB"),
-        ("rms_ratio", "RMS ratio"),
-        ("rms_corr", "RMS corr"),
-        ("f0_median_cents", "F0 median cents"),
-        ("gross_pitch_error_pct", "Gross pitch %"),
-        ("onset_hf_log_error", "Onset HF log error"),
-        ("onset_energy_ratio", "Onset energy ratio"),
+        ("mss", "MSS loss", "min"),
+        ("lsd_db", "LSD dB", "min"),
+        ("rms_ratio", "RMS ratio", "one"),
+        ("rms_corr", "RMS corr", "max"),
+        ("f0_median_cents", "F0 median cents", "min"),
+        ("gross_pitch_error_pct", "Gross pitch %", "min"),
+        ("onset_hf_log_error", "Onset HF log error", "min"),
+        ("onset_energy_ratio", "Onset energy ratio", "one"),
     ]
     models = list(summary.keys())
     fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
     axes = axes.reshape(-1)
-    colors = {"Bass-DDSP v2": "#1f77b4", "Vanilla DDSP": "#ff7f0e"}
-    for ax, (key, title) in zip(axes, metrics):
+    winner_color = "#ff7f0e"
+    other_color = "#9a9a9a"
+    for ax, (key, title, direction) in zip(axes, metrics):
         means = [summary[model][f"{key}_mean"] for model in models]
         stds = [summary[model][f"{key}_std"] for model in models]
-        ax.bar(models, means, yerr=stds, color=[colors.get(model, "0.5") for model in models], alpha=0.85)
+        scores = np.asarray(means, dtype=np.float64)
+        if direction == "min":
+            winner = int(np.nanargmin(scores))
+        elif direction == "max":
+            winner = int(np.nanargmax(scores))
+        else:
+            winner = int(np.nanargmin(np.abs(scores - 1.0)))
+        bar_colors = [
+            winner_color if index == winner else other_color
+            for index in range(len(models))
+        ]
+        ax.bar(models, means, yerr=stds, color=bar_colors, alpha=0.85)
         ax.set_title(title)
         ax.tick_params(axis="x", labelrotation=20)
         ax.grid(True, axis="y", alpha=0.25)

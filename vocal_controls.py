@@ -390,7 +390,10 @@ def extract_aubio_onsets(y, config):
             # a probability or onset strength.
             if bool(decision[0]):
                 decision_events[name][index] = 1.0
-                decision_times[name].append(index * config.hop_seconds)
+                # The decision is only causally available after this complete
+                # hop has been consumed. The old start-of-hop timestamp
+                # understated runtime availability by one hop.
+                decision_times[name].append((index + 1) * config.hop_seconds)
                 reported_time = float(detectors[name].get_last_s())
                 event_times[name].append(reported_time)
                 reported_index = int(round(reported_time / config.hop_seconds))
