@@ -5,7 +5,13 @@
   font-synthesis: none;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+::selection { background: transparent; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button { font: inherit; }
 
@@ -69,13 +75,17 @@ h1 {
   grid-template-columns: 265px 1fr;
 }
 
+.controls-panel {
+  min-height: 0;
+  padding: 14px 18px 12px;
+  border-right: 1px solid #30363c;
+  background: #14171a;
+}
+
 .knob-section {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 20px 18px 14px;
-  border-right: 1px solid #30363c;
-  background: #14171a;
 }
 
 .knob-label {
@@ -88,11 +98,10 @@ h1 {
 .knob {
   --accent: #66d9a8;
   position: relative;
-  width: 174px;
-  height: 174px;
-  margin: 7px 0 9px;
+  width: 140px;
+  height: 140px;
+  margin: 5px 0 7px;
   touch-action: none;
-  user-select: none;
   outline: none;
 }
 
@@ -111,7 +120,7 @@ h1 {
   border: 0;
   border-radius: 2px;
   background: #4f5963;
-  transform-origin: 2px 84px;
+  transform-origin: 2px 67px;
   cursor: pointer;
 }
 
@@ -122,7 +131,7 @@ h1 {
 }
 
 .knob-face {
-  inset: 25px;
+  inset: 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -136,10 +145,10 @@ h1 {
 .indicator { pointer-events: none; }
 .indicator span {
   position: absolute;
-  top: 12px;
+  top: 10px;
   left: calc(50% - 2px);
   width: 4px;
-  height: 20px;
+  height: 16px;
   border-radius: 2px;
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
@@ -149,7 +158,7 @@ h1 {
   width: 86px;
   color: var(--accent);
   text-align: center;
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1.1;
 }
 
@@ -167,7 +176,7 @@ h1 {
 }
 
 .style-scale button {
-  min-height: 23px;
+  min-height: 20px;
   overflow: hidden;
   border: 0;
   border-left: 2px solid #3c444c;
@@ -182,6 +191,83 @@ h1 {
 .style-scale button.selected {
   border-left-color: #f4f6f8;
   color: #f4f6f8;
+}
+
+.utility-controls {
+  width: 100%;
+  height: 82px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #30363c;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.compact-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.threshold-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.threshold-copy small {
+  color: #66717b;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.7px;
+}
+
+.threshold-knob,
+.octave-knob {
+  --accent: #ffcc66;
+  position: relative;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
+  touch-action: none;
+  outline: none;
+}
+
+.octave-knob {
+  --accent: #57c7ff;
+}
+
+.threshold-knob:focus-visible .knob-face,
+.octave-knob:focus-visible .knob-face {
+  border-color: var(--accent);
+}
+
+.threshold-knob .knob-face,
+.octave-knob .knob-face {
+  inset: 7px;
+}
+
+.threshold-knob .indicator span,
+.octave-knob .indicator span {
+  top: 5px;
+  width: 3px;
+  height: 9px;
+}
+
+.threshold-knob strong,
+.octave-knob strong {
+  width: auto;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.threshold-knob small,
+.octave-knob small {
+  margin-top: 1px;
+  color: #7d8791;
+  font-size: 6px;
 }
 
 .monitor {

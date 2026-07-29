@@ -9,7 +9,7 @@ run in C++; React is used only for the JUCE WebView editor.
 ```text
 host audio
   -> mono + host-rate/16 kHz resampling
-  -> 500 ms ambient-noise calibration (+10 dB gate)
+  -> user-adjustable RMS noise gate (-80 to 0 dBFS)
   -> aubio Complex onset detector (512 window, 128 hop)
   -> tiny CREPE ONNX (1024 frame, 256 hop)
   -> causal monophonic note state
@@ -38,7 +38,9 @@ aubio, resampling, and synthesis execute on a high-priority worker thread.
 The model itself has six articulation classes. `Slap Auto` is the seventh
 user-facing mode and deterministically dispatches to one of the two slap
 classes. The React editor plots F0, periodicity, note gate, onset/offset
-events, articulation, note age, and native inference time.
+events, articulation, note age, and native inference time. The detected F0 is
+sent directly to Bass-DDSP at the default octave setting; the automatable
+Octave knob provides integer shifts from `-2` to `+2`.
 
 ## Model Provenance
 
@@ -80,14 +82,16 @@ download an ONNX Runtime 1.18.1 C/C++ package matching the Mac architecture.
 
 ```bash
 cd /path/to/workspace/ScatToBassVST
-ONNXRUNTIME_ROOT=/path/to/onnxruntime-osx-arm64-1.18.1 \
+ONNXRUNTIME_ROOT=/path/to/onnxruntime-osx-arm64 \
   ./tools/build_macos.sh
 ```
 
-JUCE produces VST3, AU, and standalone targets. Before distribution, bundle
-the ONNX Runtime dylib in each plugin/app and complete `install_name_tool`,
-code-signing, notarization, DAW validation, and Apple Silicon performance
-testing.
+`JUCE_ROOT` defaults to `~/dev/JUCE` and can be overridden in the environment.
+The script builds Debug and Release VST3, AU, and standalone targets in
+`build-mac-Debug` and `build-mac-Release`. Each bundle contains aubio and ONNX
+Runtime under `Contents/Frameworks` and is ad-hoc signed for local testing.
+Distribution still requires Developer ID signing, notarization, and DAW
+validation.
 
 ## Verification Status
 

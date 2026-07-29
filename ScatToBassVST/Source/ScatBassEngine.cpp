@@ -106,7 +106,9 @@ ScatBassEngine::ScatBassEngine()
     aubioInput = new_fvec (aubioHopSize);
     aubioOutput = new_fvec (1);
     aubio_onset_set_threshold (onsetDetector, 0.30f);
-    aubio_onset_set_silence (onsetDetector, -45.0f);
+    // The user-facing RMS gate is the single source of truth for silence.
+    // Keep aubio permissive, then mask its onset candidates with that gate.
+    aubio_onset_set_silence (onsetDetector, -90.0f);
     aubio_onset_set_minioi_ms (onsetDetector, 80.0f);
 }
 
@@ -169,13 +171,25 @@ void ScatBassEngine::reset()
     onsetEnvelopeFrame = static_cast<int> (onsetEnvelope.size());
     framesSinceOnset = 100000;
     gateReleaseFrames = 0;
-    calibrationFrames = 0;
-    noisePeakDb = -100.0f;
 }
 
 void ScatBassEngine::setStyle (int styleIndex)
 {
     style.store (juce::jlimit (0, 6, styleIndex), std::memory_order_release);
+}
+
+void ScatBassEngine::setNoiseGateThresholdDb (float thresholdDb)
+{
+    noiseGateThresholdDb.store (
+        juce::jlimit (-80.0f, 0.0f, thresholdDb),
+        std::memory_order_release);
+}
+
+void ScatBassEngine::setOctaveShift (int octaves)
+{
+    octaveShift.store (
+        juce::jlimit (-2, 2, octaves),
+        std::memory_order_release);
 }
 
 void ScatBassEngine::pushInput (const juce::AudioBuffer<float>& input)
@@ -313,13 +327,8 @@ bool ScatBassEngine::renderOneFrame()
     const float frameRms = rms (latestHop, modelHopSize);
     const float rmsDb = 20.0f * std::log10 (std::max (frameRms, 1.0e-7f));
 
-    if (calibrationFrames < 32)
-    {
-        noisePeakDb = std::max (noisePeakDb, rmsDb);
-        ++calibrationFrames;
-    }
     const bool rawNoiseGate =
-        calibrationFrames >= 32 && rmsDb > noisePeakDb + 10.0f;
+        rmsDb > noiseGateThresholdDb.load (std::memory_order_acquire);
     if (rawNoiseGate)
         gateReleaseFrames = 5;
     else if (gateReleaseFrames > 0)
@@ -335,7 +344,11 @@ bool ScatBassEngine::renderOneFrame()
     const auto crepe = models.inferCrepe (modelFrame);
     currentPeriodicity = clamp (crepe.periodicity, 0.0f, 1.0f);
     if (currentPeriodicity >= 0.10f)
-        currentF0 = clamp (crepe.f0Hz * 0.5f, 30.0f, 330.0f);
+    {
+        const float octaveFactor = std::exp2 (static_cast<float> (
+            octaveShift.load (std::memory_order_acquire)));
+        currentF0 = clamp (crepe.f0Hz * octaveFactor, 30.0f, 330.0f);
+    }
     else if (! noteActive)
         currentF0 = 0.0f;
 

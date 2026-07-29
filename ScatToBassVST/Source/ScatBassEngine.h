@@ -35,6 +35,8 @@ public:
     void pushInput (const juce::AudioBuffer<float>& input);
     void pullOutput (juce::AudioBuffer<float>& output);
     void setStyle (int styleIndex);
+    void setNoiseGateThresholdDb (float thresholdDb);
+    void setOctaveShift (int octaves);
     Telemetry getTelemetry() const;
     int latencySamples() const noexcept { return frameSizeAtHostRate; }
 
@@ -93,6 +95,8 @@ private:
     float previousAmplitude = 0.0f;
 
     std::atomic<int> style { 0 };
+    std::atomic<float> noiseGateThresholdDb { -45.0f };
+    std::atomic<int> octaveShift { 0 };
     bool noteActive = false;
     int activeArticulation = 0;
     float noteAgeSeconds = 0.0f;
@@ -107,8 +111,6 @@ private:
     float currentPeriodicity = 0.0f;
     float currentLoudness = 0.0f;
 
-    int calibrationFrames = 0;
-    float noisePeakDb = -100.0f;
     float loudnessMean = -24.0f;
     float loudnessVariance = 144.0f;
 

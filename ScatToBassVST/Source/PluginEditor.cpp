@@ -66,6 +66,14 @@ ScatToBassAudioProcessorEditor::ScatToBassAudioProcessorEditor (
       processor (owner),
       styleAttachment (
           *processor.parameters().getParameter ("style"), styleRelay, nullptr),
+      noiseGateThresholdAttachment (
+          *processor.parameters().getParameter ("noiseGateThreshold"),
+          noiseGateThresholdRelay,
+          nullptr),
+      octaveShiftAttachment (
+          *processor.parameters().getParameter ("octaveShift"),
+          octaveShiftRelay,
+          nullptr),
       browser (
           juce::WebBrowserComponent::Options {}
               .withBackend (
@@ -78,6 +86,8 @@ ScatToBassAudioProcessorEditor::ScatToBassAudioProcessorEditor (
               .withResourceProvider (
                   [this] (const auto& url) { return getResource (url); })
               .withOptionsFrom (styleRelay)
+              .withOptionsFrom (noiseGateThresholdRelay)
+              .withOptionsFrom (octaveShiftRelay)
               .withNativeIntegrationEnabled())
 {
     addAndMakeVisible (browser);

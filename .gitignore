@@ -23,6 +23,8 @@ node_modules/
 
 *.egg-info/
 build/
+ScatToBassVST/build*/
+ScatToBassVST/cmake-build-*/
 dist/
 
 # Generated Scat-to-Bass native assets. Recreate with tools/export_models.py.

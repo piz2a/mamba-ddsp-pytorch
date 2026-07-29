@@ -13,6 +13,8 @@ const STYLES = [
 
 const ARTICULATIONS = ['Finger', 'Muted', 'Pick', 'Slap Pop', 'Slap Thumb', 'Dead Note'];
 const HISTORY = 150;
+const MIN_GATE_DB = -80;
+const MAX_GATE_DB = 0;
 
 type Frame = {
   inputLevel: number;
@@ -135,6 +137,197 @@ function StyleKnob() {
   );
 }
 
+function useNoiseGateParameter() {
+  const relay = useMemo(() => getSliderState('noiseGateThreshold'), []);
+  const [value, setValueState] = useState(() => relay.getScaledValue());
+
+  useEffect(() => {
+    const listener = relay.valueChangedEvent.addListener(() => {
+      setValueState(relay.getScaledValue());
+    });
+    return () => relay.valueChangedEvent.removeListener(listener);
+  }, [relay]);
+
+  const setValue = (next: number, includeGesture = true) => {
+    const snapped = Math.round(next * 2) / 2;
+    const clamped = Math.max(MIN_GATE_DB, Math.min(MAX_GATE_DB, snapped));
+    if (includeGesture) relay.sliderDragStarted();
+    relay.setNormalisedValue((clamped - MIN_GATE_DB) / (MAX_GATE_DB - MIN_GATE_DB));
+    if (includeGesture) relay.sliderDragEnded();
+    setValueState(clamped);
+  };
+
+  return {
+    value,
+    setValue,
+    beginGesture: () => relay.sliderDragStarted(),
+    endGesture: () => relay.sliderDragEnded(),
+  };
+}
+
+function NoiseGateKnob() {
+  const { value, setValue, beginGesture, endGesture } = useNoiseGateParameter();
+  const startY = useRef(0);
+  const startValue = useRef(value);
+  const dragging = useRef(false);
+  const normalised = (value - MIN_GATE_DB) / (MAX_GATE_DB - MIN_GATE_DB);
+  const rotation = -135 + normalised * 270;
+
+  const beginDrag = (event: React.PointerEvent) => {
+    startY.current = event.clientY;
+    startValue.current = value;
+    dragging.current = true;
+    beginGesture();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const drag = (event: React.PointerEvent) => {
+    if (!dragging.current) return;
+    setValue(startValue.current + (startY.current - event.clientY) * 0.25, false);
+  };
+  const finishDrag = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    endGesture();
+  };
+
+  return (
+    <section className="compact-control threshold-section" aria-label="Noise gate threshold">
+      <div className="threshold-copy">
+        <div className="knob-label">NOISE GATE</div>
+        <small>RMS THRESHOLD</small>
+      </div>
+      <div
+        className="threshold-knob"
+        role="slider"
+        tabIndex={0}
+        aria-label="Noise gate threshold"
+        aria-valuemin={MIN_GATE_DB}
+        aria-valuemax={MAX_GATE_DB}
+        aria-valuenow={Number(value.toFixed(1))}
+        aria-valuetext={`${value.toFixed(1)} decibels`}
+        title="Drag vertically, scroll, or use arrow keys. Double-click to reset."
+        onPointerDown={beginDrag}
+        onPointerMove={drag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
+        onDoubleClick={() => setValue(-45)}
+        onWheel={(event) => {
+          event.preventDefault();
+          setValue(value + (event.deltaY > 0 ? -1 : 1));
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowUp' || event.key === 'ArrowRight') setValue(value + 0.5);
+          if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') setValue(value - 0.5);
+        }}
+      >
+        <div className="knob-face">
+          <div className="indicator" style={{ transform: `rotate(${rotation}deg)` }}>
+            <span />
+          </div>
+          <strong>{value.toFixed(1)}</strong>
+          <small>dB</small>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function useOctaveParameter() {
+  const relay = useMemo(() => getSliderState('octaveShift'), []);
+  const [value, setValueState] = useState(() => Math.round(relay.getScaledValue()));
+
+  useEffect(() => {
+    const listener = relay.valueChangedEvent.addListener(() => {
+      setValueState(Math.round(relay.getScaledValue()));
+    });
+    return () => relay.valueChangedEvent.removeListener(listener);
+  }, [relay]);
+
+  const setValue = (next: number, includeGesture = true) => {
+    const clamped = Math.max(-2, Math.min(2, Math.round(next)));
+    if (includeGesture) relay.sliderDragStarted();
+    relay.setNormalisedValue((clamped + 2) / 4);
+    if (includeGesture) relay.sliderDragEnded();
+    setValueState(clamped);
+  };
+
+  return {
+    value,
+    setValue,
+    beginGesture: () => relay.sliderDragStarted(),
+    endGesture: () => relay.sliderDragEnded(),
+  };
+}
+
+function OctaveKnob() {
+  const { value, setValue, beginGesture, endGesture } = useOctaveParameter();
+  const startY = useRef(0);
+  const startValue = useRef(value);
+  const dragging = useRef(false);
+  const rotation = -135 + ((value + 2) / 4) * 270;
+  const displayValue = value > 0 ? `+${value}` : `${value}`;
+
+  const beginDrag = (event: React.PointerEvent) => {
+    startY.current = event.clientY;
+    startValue.current = value;
+    dragging.current = true;
+    beginGesture();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const drag = (event: React.PointerEvent) => {
+    if (!dragging.current) return;
+    setValue(startValue.current + (startY.current - event.clientY) / 18, false);
+  };
+  const finishDrag = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    endGesture();
+  };
+
+  return (
+    <section className="compact-control octave-section" aria-label="Octave shift">
+      <div className="threshold-copy">
+        <div className="knob-label">OCTAVE</div>
+        <small>SHIFT</small>
+      </div>
+      <div
+        className="octave-knob"
+        role="slider"
+        tabIndex={0}
+        aria-label="Octave shift"
+        aria-valuemin={-2}
+        aria-valuemax={2}
+        aria-valuenow={value}
+        aria-valuetext={`${displayValue} octaves`}
+        title="Drag vertically, scroll, or use arrow keys. Double-click to reset."
+        onPointerDown={beginDrag}
+        onPointerMove={drag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
+        onDoubleClick={() => setValue(0)}
+        onWheel={(event) => {
+          event.preventDefault();
+          setValue(value + (event.deltaY > 0 ? -1 : 1));
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowUp' || event.key === 'ArrowRight') setValue(value + 1);
+          if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') setValue(value - 1);
+        }}
+      >
+        <div className="knob-face">
+          <div className="indicator" style={{ transform: `rotate(${rotation}deg)` }}>
+            <span />
+          </div>
+          <strong>{displayValue}</strong>
+          <small>OCT</small>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function points(values: number[], min: number, max: number) {
   return values
     .map((value, index) => {
@@ -210,7 +403,13 @@ export default function App() {
         <div className="engine-badge"><span /> NATIVE ENGINE</div>
       </header>
       <div className="workspace">
-        <StyleKnob />
+        <div className="controls-panel">
+          <StyleKnob />
+          <div className="utility-controls">
+            <NoiseGateKnob />
+            <OctaveKnob />
+          </div>
+        </div>
         <LiveGraph frames={frames} />
       </div>
       <footer>

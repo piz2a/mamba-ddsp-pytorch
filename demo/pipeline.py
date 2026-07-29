@@ -47,7 +47,8 @@ class DemoConfig:
     output_root: Path = WORKSPACE / "demo" / "outputs"
     device: str = "auto"
     articulation_mode: str = "Slap auto"
-    pitch_shift_semitones: float = -12.0
+    pitch_shift_semitones: float = 0.0
+    octave_shift: int = 0
     slap_crossover_midi: int = 40
     pitch_hold_periodicity: float = 0.10
     f0_min_hz: float = 30.0
@@ -177,11 +178,18 @@ class ScatToBassDemo:
         _synchronize(self.device)
         self.setup_times["load_onset_model_seconds"] = time.perf_counter() - started
 
-    def _map_pitch(self, controls: dict) -> np.ndarray:
+    def _map_pitch(
+        self, controls: dict, octave_shift: int | None = None
+    ) -> np.ndarray:
         source_f0 = np.asarray(controls["f0_hz"], dtype=np.float32)
         periodicity = np.asarray(controls["periodicity"], dtype=np.float32)
         gate = np.asarray(controls["gate"], dtype=np.float32)
-        factor = 2.0 ** (self.config.pitch_shift_semitones / 12.0)
+        octaves = self.config.octave_shift if octave_shift is None else octave_shift
+        if not -2 <= octaves <= 2:
+            raise ValueError("octave_shift must be between -2 and +2")
+        factor = 2.0 ** (
+            self.config.pitch_shift_semitones / 12.0 + int(octaves)
+        )
         shifted = source_f0 * factor
         mapped = np.zeros_like(shifted)
         held = 0.0
@@ -308,9 +316,11 @@ class ScatToBassDemo:
         self,
         audio_path: str | Path,
         articulation_mode: str | None = None,
+        octave_shift: int | None = None,
     ) -> dict:
         source = Path(audio_path).expanduser().resolve()
         mode = articulation_mode or self.config.articulation_mode
+        octaves = self.config.octave_shift if octave_shift is None else octave_shift
         timings: dict[str, float] = {}
         total_started = time.perf_counter()
 
@@ -333,7 +343,7 @@ class ScatToBassDemo:
         timings["control_extraction_seconds"] = time.perf_counter() - started
 
         started = time.perf_counter()
-        mapped_f0 = self._map_pitch(vocal)
+        mapped_f0 = self._map_pitch(vocal, octave_shift=octaves)
         articulation_id, articulation_name = self._articulation_track(
             vocal, mapped_f0, mode
         )
@@ -409,6 +419,7 @@ class ScatToBassDemo:
             "cached_dct_bank_shape": list(self.cached_dct_bank.shape),
             "articulation_mode": mode,
             "pitch_shift_semitones": self.config.pitch_shift_semitones,
+            "octave_shift": int(octaves),
             "slap_crossover_midi": self.config.slap_crossover_midi,
             "slap_crossover_hz": 440.0
             * 2.0 ** ((self.config.slap_crossover_midi - 69.0) / 12.0),

@@ -9,6 +9,9 @@ ScatToBassAudioProcessor::ScatToBassAudioProcessor()
       state (*this, nullptr, "ScatToBassState", makeParameters())
 {
     styleParameter = state.getRawParameterValue ("style");
+    noiseGateThresholdParameter =
+        state.getRawParameterValue ("noiseGateThreshold");
+    octaveShiftParameter = state.getRawParameterValue ("octaveShift");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -28,6 +31,28 @@ ScatToBassAudioProcessor::makeParameters()
             "Dead Note"
         },
         0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "noiseGateThreshold", 1 },
+        "Noise Gate Threshold",
+        juce::NormalisableRange<float> { -80.0f, 0.0f, 0.5f },
+        -45.0f,
+        juce::AudioParameterFloatAttributes {}
+            .withLabel ("dB")
+            .withStringFromValueFunction ([] (float value, int) {
+                return juce::String (value, 1);
+            })));
+    layout.add (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { "octaveShift", 1 },
+        "Octave Shift",
+        -2,
+        2,
+        0,
+        juce::AudioParameterIntAttributes {}
+            .withLabel ("oct")
+            .withStringFromValueFunction ([] (int value, int) {
+                return value > 0 ? "+" + juce::String (value)
+                                 : juce::String (value);
+            })));
     return layout;
 }
 
@@ -57,6 +82,8 @@ void ScatToBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
     engine.setStyle (juce::roundToInt (styleParameter->load()));
+    engine.setNoiseGateThresholdDb (noiseGateThresholdParameter->load());
+    engine.setOctaveShift (juce::roundToInt (octaveShiftParameter->load()));
     engine.pushInput (buffer);
     engine.pullOutput (buffer);
 }

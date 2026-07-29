@@ -22,6 +22,10 @@ private:
     ScatToBassAudioProcessor& processor;
     juce::WebSliderRelay styleRelay { "style" };
     juce::WebSliderParameterAttachment styleAttachment;
+    juce::WebSliderRelay noiseGateThresholdRelay { "noiseGateThreshold" };
+    juce::WebSliderParameterAttachment noiseGateThresholdAttachment;
+    juce::WebSliderRelay octaveShiftRelay { "octaveShift" };
+    juce::WebSliderParameterAttachment octaveShiftAttachment;
     juce::WebBrowserComponent browser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (

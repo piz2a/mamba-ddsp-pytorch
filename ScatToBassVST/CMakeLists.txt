@@ -172,8 +172,52 @@ if(UNIX AND NOT APPLE)
     )
 endif()
 if(APPLE)
-    set_target_properties(ScatToBass PROPERTIES
-        BUILD_RPATH "@loader_path/../../../../Frameworks;${ONNXRUNTIME_ROOT}/lib"
-        INSTALL_RPATH "@loader_path/../../../../Frameworks"
+    # ONNX Runtime's macOS package uses an @rpath install name. Put the
+    # versioned dylib inside every bundle so copied plugins do not depend on
+    # the developer machine's ONNXRUNTIME_ROOT.
+    file(
+        GLOB ONNXRUNTIME_VERSIONED_DYLIBS
+        LIST_DIRECTORIES FALSE
+        "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.[0-9]*.dylib"
     )
+    if(ONNXRUNTIME_VERSIONED_DYLIBS)
+        list(SORT ONNXRUNTIME_VERSIONED_DYLIBS COMPARE NATURAL ORDER DESCENDING)
+        list(GET ONNXRUNTIME_VERSIONED_DYLIBS 0 ONNXRUNTIME_BUNDLE_DYLIB)
+    else()
+        set(ONNXRUNTIME_BUNDLE_DYLIB "${ONNXRUNTIME_LIBRARY}")
+    endif()
+    get_filename_component(
+        ONNXRUNTIME_BUNDLE_DYLIB_NAME
+        "${ONNXRUNTIME_BUNDLE_DYLIB}"
+        NAME
+    )
+
+    foreach(bundle_target IN ITEMS
+        ScatToBass_VST3
+        ScatToBass_AU
+        ScatToBass_Standalone
+    )
+        set_target_properties("${bundle_target}" PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path/../Frameworks"
+        )
+        add_custom_command(TARGET "${bundle_target}" POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>/Contents/Frameworks"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:aubio>"
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>/Contents/Frameworks/$<TARGET_FILE_NAME:aubio>"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${ONNXRUNTIME_BUNDLE_DYLIB}"
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>/Contents/Frameworks/${ONNXRUNTIME_BUNDLE_DYLIB_NAME}"
+            COMMAND /usr/bin/codesign --force --sign -
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>/Contents/Frameworks/$<TARGET_FILE_NAME:aubio>"
+            COMMAND /usr/bin/codesign --force --sign -
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>/Contents/Frameworks/${ONNXRUNTIME_BUNDLE_DYLIB_NAME}"
+            COMMAND /usr/bin/codesign --force --deep --sign -
+                "$<TARGET_BUNDLE_DIR:${bundle_target}>"
+            COMMENT "Bundling ONNX Runtime and ad-hoc signing ${bundle_target}"
+            VERBATIM
+        )
+    endforeach()
 endif()

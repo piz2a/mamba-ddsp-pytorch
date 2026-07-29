@@ -2,7 +2,7 @@
 
 Open `scat_to_bass_demo.ipynb` in the workspace Python environment. The
 notebook keeps only the user-facing steps: upload/select audio, configure the
-articulation knob, load the models, and synthesize.
+articulation and octave controls, load the models, and synthesize.
 
 The pipeline is:
 
@@ -10,7 +10,8 @@ The pipeline is:
 2. Extract TorchCREPE F0/periodicity and causal aubio Complex onsets.
 3. Resolve onset, offset, gate, and note age with the existing monophonic
    state machine and calibrated noise gate.
-4. Shift vocal F0 into the bass range and latch one articulation per note.
+4. Apply the selected `-2` to `+2` octave shift to vocal F0 and latch one
+   articulation per note. Octave `0` sends detected F0 directly to Bass-DDSP.
 5. In `Slap auto`, select `ST_NO` below MIDI 40 (82.41 Hz) and `SP_NO` at or
    above MIDI 40. This is a deterministic arrangement convention inferred
    from the IDMT slap riffs, not an acoustic slap classifier.

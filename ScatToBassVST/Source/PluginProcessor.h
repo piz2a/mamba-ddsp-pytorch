@@ -39,6 +39,8 @@ private:
     ScatBassEngine engine;
     juce::AudioProcessorValueTreeState state;
     std::atomic<float>* styleParameter = nullptr;
+    std::atomic<float>* noiseGateThresholdParameter = nullptr;
+    std::atomic<float>* octaveShiftParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScatToBassAudioProcessor)
 };
